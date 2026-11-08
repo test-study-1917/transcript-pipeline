@@ -11,6 +11,7 @@ import {
   useDialog,
   useMessage,
 } from "naive-ui";
+import FileDropZone from "../components/FileDropZone.vue";
 import LibraryBookDetail from "../components/LibraryBookDetail.vue";
 import LibraryMaterialComposer from "../components/LibraryMaterialComposer.vue";
 import { getFrontendSettings, type FrontendSettings } from "../api/client";
@@ -297,8 +298,12 @@ function addRange(value: LibraryRange) {
 async function upload(event: Event) {
   const input = event.target as HTMLInputElement;
   const files = [...(input.files ?? [])];
-  if (!files.length) return;
+  try { await uploadBooks(files); }
+  finally { input.value = ""; }
+}
 
+async function uploadBooks(files: File[]) {
+  if (!files.length || uploading.value) return;
   uploading.value = true;
   for (const file of files) {
     try {
@@ -311,7 +316,6 @@ async function upload(event: Event) {
       message.error(`${file.name}：${errorText(error)}`);
     }
   }
-  input.value = "";
   uploading.value = false;
   bookPage.value = 1;
   await loadBooks();
@@ -802,17 +806,20 @@ onBeforeUnmount(() => {
             @keyup.enter="bookPage = 1; loadBooks()"
           />
           <n-button @click="bookPage = 1; loadBooks()">搜索</n-button>
-          <input
-            ref="uploadInput"
-            type="file"
-            accept=".pdf,application/pdf"
-            multiple
-            class="visually-hidden"
-            @change="upload"
-          />
-          <n-button secondary :loading="uploading" @click="uploadInput?.click()">
-            上传 PDF
-          </n-button>
+          <FileDropZone label="书库 PDF" accept=".pdf,application/pdf" multiple :disabled="uploading" class="library-upload-zone" @files="uploadBooks">
+            <input
+              ref="uploadInput"
+              type="file"
+              :disabled="uploading"
+              accept=".pdf,application/pdf"
+              multiple
+              class="visually-hidden"
+              @change="upload"
+            />
+            <n-button secondary :loading="uploading" @click="uploadInput?.click()">
+              上传 PDF
+            </n-button>
+          </FileDropZone>
           <n-button @click="loadCandidates">导入历史 OCR</n-button>
           <n-button @click="clearPreviews">清理预览缓存</n-button>
           <n-checkbox v-model:checked="showArchived" @update:checked="switchArchived">
@@ -1334,6 +1341,8 @@ onBeforeUnmount(() => {
   font-size: 16px;
   font-weight: 600;
 }
+
+.library-upload-zone { flex: 1 0 100%; }
 
 .list-toolbar .n-input {
   flex: 1 1 240px;

@@ -2,6 +2,8 @@
 import { NButton, NFlex, NProgress, NTag, useMessage } from "naive-ui";
 import { computed, ref } from "vue";
 
+import FileDropZone from "./FileDropZone.vue";
+
 import { uploadFile, type UploadKind, type UploadResponse } from "../api/client";
 
 const props = defineProps<{
@@ -52,7 +54,13 @@ function createUploadGroupId(): string {
 
 async function handleDirectoryChange(event: Event) {
   const input = event.target as HTMLInputElement;
-  const selectedFiles = Array.from(input.files ?? []) as FileWithRelativePath[];
+  const selectedFiles = Array.from(input.files ?? []);
+  try { await uploadFiles(selectedFiles); }
+  finally { input.value = ""; }
+}
+
+async function uploadFiles(selectedFiles: FileWithRelativePath[]) {
+  if (uploading.value) return;
   if (selectedFiles.length === 0) {
     return;
   }
@@ -66,7 +74,6 @@ async function handleDirectoryChange(event: Event) {
 
   if (files.length === 0) {
     message.warning(`所选目录中没有可上传的${props.label}文件。`);
-    input.value = "";
     return;
   }
 
@@ -91,42 +98,44 @@ async function handleDirectoryChange(event: Event) {
     message.error(caught instanceof Error ? caught.message : "目录上传失败");
   } finally {
     uploading.value = false;
-    input.value = "";
   }
 }
 </script>
 
 <template>
-  <n-flex vertical :size="8" class="remote-directory-upload">
-    <n-flex align="center" :size="8" wrap>
-      <input
-        ref="fileInput"
-        type="file"
-        :accept="accept"
-        multiple
-        webkitdirectory
-        directory
-        class="remote-directory-upload__input"
-        @change="handleDirectoryChange"
+  <FileDropZone :label="`${label}目录`" multiple directory :disabled="uploading" @files="uploadFiles">
+    <n-flex vertical :size="8" class="remote-directory-upload">
+      <n-flex align="center" :size="8" wrap>
+        <input
+          ref="fileInput"
+          type="file"
+          :disabled="uploading"
+          :accept="accept"
+          multiple
+          webkitdirectory
+          directory
+          class="remote-directory-upload__input"
+          @change="handleDirectoryChange"
+        />
+        <n-button secondary type="primary" :loading="uploading" @click="openDirectoryPicker" class="remote-directory-upload__button">
+          {{ buttonText ?? `上传本机${label}目录` }}
+        </n-button>
+        <n-tag v-if="uploadedDirectory" size="small" type="success" :bordered="false" class="remote-directory-upload__tag">
+          {{ uploadedCount }} 个文件
+        </n-tag>
+        <n-tag v-if="ignoredCount" size="small" type="warning" :bordered="false">
+          跳过 {{ ignoredCount }} 个
+        </n-tag>
+      </n-flex>
+      <n-progress
+        v-if="uploading"
+        type="line"
+        :percentage="progressPercentage"
+        :height="6"
+        :show-indicator="false"
       />
-      <n-button secondary type="primary" :loading="uploading" @click="openDirectoryPicker" class="remote-directory-upload__button">
-        {{ buttonText ?? `上传本机${label}目录` }}
-      </n-button>
-      <n-tag v-if="uploadedDirectory" size="small" type="success" :bordered="false" class="remote-directory-upload__tag">
-        {{ uploadedCount }} 个文件
-      </n-tag>
-      <n-tag v-if="ignoredCount" size="small" type="warning" :bordered="false">
-        跳过 {{ ignoredCount }} 个
-      </n-tag>
     </n-flex>
-    <n-progress
-      v-if="uploading"
-      type="line"
-      :percentage="progressPercentage"
-      :height="6"
-      :show-indicator="false"
-    />
-  </n-flex>
+  </FileDropZone>
 </template>
 
 <style scoped>

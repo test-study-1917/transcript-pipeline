@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router";
 import { NButton, NModal, useMessage } from "naive-ui";
 import { useDictation, type Utterance } from "../composables/useDictation";
+import FileDropZone from "../components/FileDropZone.vue";
 import DictationEditor from "../components/DictationEditor.vue";
 import RecordingDraftPane from "../components/RecordingDraftPane.vue";
 import { validateTerms } from "../composables/dictationTerms";
@@ -13,6 +14,8 @@ const buffer = computed(() => d.documents.get(session.value?.id ?? ""));
 const preview = computed(() => buffer.value.preview.value);
 const emptyStart = computed(() => !active.value && !preview.value && !buffer.value.text.value.trim());
 const startDisabled = computed(() => recognizing.value || !!captureAction.value || d.local.active.value || d.local.busy.value || d.uploadUncertain.value || busy.value);
+const uploadDisabled = computed(() => recognizing.value || active.value || busy.value || !!captureAction.value || !!preview.value || d.uploadUncertain.value || !!d.uploadProgress.value);
+const recordingAccept = "audio/*,.wav,.mp3,.m4a,.aac,.flac,.ogg,.mp4,.webm";
 const compact = computed(() => route.query.compact === "1");
 const viewingOwnedTask = computed(() => recognizing.value && session.value?.id === recordingSession.value?.id);
 const tab = computed(() => ['record', 'upload', 'history'].includes(String(route.query.mode)) ? String(route.query.mode) : 'live');
@@ -186,13 +189,17 @@ async function startDictation() {
 }
 
 async function uploadChanged(event: Event) {
-  const file = (event.target as HTMLInputElement).files?.[0];
-  if (file) {
-    await buffer.value.flush();
-    await d.upload(file, termList(), enableCleanup.value, cleanupModel.value, documentCleanupModel.value, cleanupEffort.value, documentEffort.value);
-    if (!error.value) await setTab('live');
-  }
-  if (uploadInput.value) uploadInput.value.value = '';
+  const input = event.target as HTMLInputElement;
+  try { await uploadFiles(Array.from(input.files ?? [])); }
+  finally { input.value = ''; }
+}
+
+async function uploadFiles(files: File[]) {
+  const file = files[0];
+  if (!file || uploadDisabled.value) return;
+  await buffer.value.flush();
+  await d.upload(file, termList(), enableCleanup.value, cleanupModel.value, documentCleanupModel.value, cleanupEffort.value, documentEffort.value);
+  if (!error.value) await setTab('live');
 }
 
 async function select(id: string) {
@@ -452,7 +459,7 @@ onBeforeUnmount(() => {
 
     <!-- Tab 3: Upload audio file -->
     <section v-else-if="tab === 'upload'" class="dictation-upload">
-      <div class="upload-dropzone">
+      <FileDropZone label="听写录音" :accept="recordingAccept" :disabled="uploadDisabled" class="upload-dropzone" @files="files => action(() => uploadFiles(files))">
         <div class="upload-icon-circle">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -462,18 +469,18 @@ onBeforeUnmount(() => {
         </div>
         <h3>上传音频进行双遍转写</h3>
         <p class="upload-hint">支持 WAV、MP3、M4A、AAC、FLAC、OGG、WebM / MP4 音轨。{{ uploadLimit }}。</p>
-        <label class="upload-file-button" :class="{ 'is-disabled': recognizing || active || busy || !!captureAction || !!preview }">
+        <label class="upload-file-button" :class="{ 'is-disabled': uploadDisabled }">
           <input
             ref="uploadInput"
             aria-label="选择录音文件"
             type="file"
-            accept="audio/*,.mp4,.webm"
-            :disabled="recognizing || active || busy || !!captureAction || !!preview"
+            :accept="recordingAccept"
+            :disabled="uploadDisabled"
             @change="action(async () => uploadChanged($event))"
           />
           <span>选择录音文件</span>
         </label>
-      </div>
+      </FileDropZone>
 
       <div v-if="d.uploadProgress.value" class="upload-progress-card" role="status">
         <div class="progress-info">

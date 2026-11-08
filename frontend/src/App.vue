@@ -5,6 +5,7 @@ import {
   NConfigProvider, NDialogProvider, NMessageProvider, NButton,
   NDrawer, NDrawerContent, darkTheme, type GlobalThemeOverrides,
 } from "naive-ui";
+import { preventFileNavigation } from "./utils/fileDrop";
 import NavBar from "./components/NavBar.vue";
 import DictationDock from "./components/DictationDock.vue";
 import { provideDictation } from "./composables/useDictation";
@@ -47,8 +48,18 @@ watch(() => route.path, async () => {
   await nextTick();
   if (!wasOpen) document.querySelector<HTMLElement>("#main-content")?.focus({ preventScroll: true });
 });
-onMounted(() => { updateClass(); window.addEventListener("resize", onResize); });
-onBeforeUnmount(() => window.removeEventListener("resize", onResize));
+onMounted(() => {
+  updateClass();
+  window.addEventListener("resize", onResize);
+  // Outside a labelled zone a file drop must neither navigate away nor choose an upload target.
+  window.addEventListener("dragover", preventFileNavigation);
+  window.addEventListener("drop", preventFileNavigation);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", onResize);
+  window.removeEventListener("dragover", preventFileNavigation);
+  window.removeEventListener("drop", preventFileNavigation);
+});
 
 const themeOverrides = computed<GlobalThemeOverrides>(() => {
   const dark = isDark.value;

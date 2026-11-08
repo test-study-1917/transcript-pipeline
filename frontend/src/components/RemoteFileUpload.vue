@@ -2,6 +2,8 @@
 import { NButton, NFlex, NTag, useMessage } from "naive-ui";
 import { ref } from "vue";
 
+import FileDropZone from "./FileDropZone.vue";
+
 import { uploadFile, type UploadKind } from "../api/client";
 
 const props = defineProps<{
@@ -27,10 +29,14 @@ function openFilePicker() {
 
 async function handleFileChange(event: Event) {
   const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
-  if (!file) {
-    return;
-  }
+  const files = Array.from(input.files ?? []);
+  try { await uploadFiles(files); }
+  finally { input.value = ""; }
+}
+
+async function uploadFiles(files: File[]) {
+  const file = files[0];
+  if (!file || uploading.value) return;
 
   uploading.value = true;
   try {
@@ -42,27 +48,29 @@ async function handleFileChange(event: Event) {
     message.error(caught instanceof Error ? caught.message : "上传失败");
   } finally {
     uploading.value = false;
-    input.value = "";
   }
 }
 </script>
 
 <template>
-  <n-flex align="center" :size="8" wrap class="remote-upload">
-    <input
-      ref="fileInput"
-      type="file"
-      :accept="accept"
-      class="remote-upload__input"
-      @change="handleFileChange"
-    />
-    <n-button secondary type="primary" :loading="uploading" @click="openFilePicker" class="remote-upload__button">
-      {{ buttonText ?? `上传本机${label}` }}
-    </n-button>
-    <n-tag v-if="uploadedName" size="small" type="success" :bordered="false" class="remote-upload__tag">
-      {{ uploadedName }}
-    </n-tag>
-  </n-flex>
+  <FileDropZone :label="label" :accept="accept" :disabled="uploading" @files="uploadFiles">
+    <n-flex align="center" :size="8" wrap class="remote-upload">
+      <input
+        ref="fileInput"
+        type="file"
+        :disabled="uploading"
+        :accept="accept"
+        class="remote-upload__input"
+        @change="handleFileChange"
+      />
+      <n-button secondary type="primary" :loading="uploading" @click="openFilePicker" class="remote-upload__button">
+        {{ buttonText ?? `上传本机${label}` }}
+      </n-button>
+      <n-tag v-if="uploadedName" size="small" type="success" :bordered="false" class="remote-upload__tag">
+        {{ uploadedName }}
+      </n-tag>
+    </n-flex>
+  </FileDropZone>
 </template>
 
 <style scoped>

@@ -57,6 +57,7 @@ def build_app(root: Path):
             allowed = (
                 path == "/api/frontend-settings"
                 or path == "/api/uploads"
+                or (request.method == "POST" and path == "/api/library/books")
                 or path.startswith("/api/stage-inputs/")
                 or path == "/api/stages/export-markdown/file-run"
                 or (request.method == "DELETE" and path.startswith("/api/jobs/ui-example-"))

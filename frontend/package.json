@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
+    "test:file-drop": "node tests/file-drop.test.mjs",
+    "test:upload-drop": "node tests/upload-drop.mjs",
     "test:workbench": "node tests/workbench.mjs",
     "test:dictation-notebook": "node tests/dictation-notebook.mjs",
     "test:extension-install": "node tests/dictation-extension-install.mjs"

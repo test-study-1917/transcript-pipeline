@@ -38,3 +38,22 @@ def test_browser_fixture_allows_isolated_settings(tmp_path: Path) -> None:
     response = request_json(app, "PUT", "/api/frontend-settings", json_body={"codex_lb_base_url": "http://127.0.0.1:2455"})
     assert response.status_code == 200
     assert (tmp_path / "data/jobs/frontend-settings.json").exists()
+
+
+def test_browser_fixture_allows_pdf_upload_but_not_ocr(tmp_path: Path) -> None:
+    import io
+    from pypdf import PdfWriter
+    from tests.test_api_server import request_raw
+
+    app = build_app(tmp_path)
+    pdf = PdfWriter()
+    pdf.add_blank_page(width=200, height=200)
+    content = io.BytesIO()
+    pdf.write(content)
+    response = request_raw(app, "POST", "/api/library/books", content=content.getvalue(), params={"filename": "drop-test.pdf"})
+    assert response.status_code == 201
+    book = response.json()
+    assert book["page_count"] == 1
+    assert book["ready_pages"] == 0
+    blocked = request_json(app, "POST", f"/api/library/books/{book['id']}/ocr-jobs", json_body={})
+    assert blocked.status_code == 403

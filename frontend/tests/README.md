@@ -18,11 +18,31 @@ WORKBENCH_FILTER='soft light|reduced motion' CDP_URL=http://127.0.0.1:9339 WORKB
 
 `TEST_OUTPUT` 应在 scratch 内。`WORKBENCH_FILTER` 为测试名称正则；搜索定向检查需先运行 `real upload`，以生成单阶段样例。可使用 `real upload|task search` 一次完成。
 
-脚本先检查隔离标记，拒绝在真实服务上执行。服务仅允许隔离设置、上传、已有 Markdown 导出和 fixture 删除；ASR、OCR、精修执行全部拒绝。成功/失败/运行中任务是 UI 样例，批量搜索使用拦截响应，不能作为模型运行证据。导出检查实际上传 JSON、调用原有导出阶段并下载 ZIP。
+脚本先检查隔离标记，拒绝在真实服务上执行。服务仅允许隔离设置、文件／书库 PDF 上传、已有 Markdown 导出和 fixture 删除；ASR、OCR、精修执行全部拒绝。成功/失败/运行中任务是 UI 样例，批量搜索使用拦截响应，不能作为模型运行证据。导出检查实际上传 JSON、调用原有导出阶段并下载 ZIP。
 
 本次使用 Chrome 154 验证。Moli 1.1.10 对该页面出现 DOM 存在但布局为零的兼容问题，不应在失败时用强制点击跳过可见性检查。
 
 检查完关闭自己启动的服务和临时浏览器；不要终止用户已有进程。
+
+## 所有上传入口的拖放检查
+
+先运行不需要浏览器的文件规则与目录遍历测试：
+
+```bash
+npm --prefix frontend run test:file-drop
+```
+
+启动上文的隔离 API 和 Vite 后，验证每个上传入口及实际上传、导出、下载：
+
+```bash
+WORKBENCH_URL=http://127.0.0.1:5179 WORKBENCH_OUTPUT="$TEST_OUTPUT" npm --prefix frontend run test:upload-drop
+# 使用已有的其他 Chromium；也可设置 CDP_URL 连接现有浏览器
+WORKBENCH_URL=http://127.0.0.1:5179 WORKBENCH_OUTPUT="$TEST_OUTPUT" UPLOAD_TEST_CHROMIUM=/path/to/chromium npm --prefix frontend run test:upload-drop
+```
+
+浏览器用例不自动安装浏览器。覆盖单任务的媒体／参考／词表、批量清单／目录／共享参考／词表、七个阶段的所有输入槽、独立 PDF OCR 文件／目录、书库多 PDF 和听写录音。检查落点隔离、格式及数量拒绝、忙碌与失败恢复、阶段切换后的迟到响应、目录相对路径、原选择按钮、375px／深色布局。文件夹遍历规则另覆盖 301 个文件和多批读取。
+
+通用文件上传、目录上传、书库入库、Markdown／TXT 导出和 ZIP 下载走真实隔离 API；听写仅验证真实 XHR 字节和参数，返回受控错误，不执行 ASR。截图、请求和检查记录写入 `WORKBENCH_OUTPUT`；`real-drop-export.zip` 是拖入精修 JSON 后实际导出的结果。可用 `UPLOAD_TEST_FILTER` 按检查名正则选择独立场景；单任务错误／悬停／忙碌检查需先运行 `single job`。测试机缺中文字库时可设置 `UPLOAD_TEST_FONT=/path/to/chinese-font.ttf`，仅为测试页面临时加载字体。
 
 ## 连续听写记事本
 
