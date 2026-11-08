@@ -245,7 +245,8 @@ def test_startup_failure_cancels_other_loader_before_gpu_unlock(root):
     asyncio.run(run())
 
 
-def test_http_snapshot_download_edit_and_owner_are_consistent(root):
+@pytest.mark.parametrize("document_model", ["gpt-6.1-sol", "gpt-6.1-terra"])
+def test_http_snapshot_download_edit_and_owner_are_consistent(root, document_model):
     from api_server import create_app
     app = create_app(project_root=root)
     app.state.dictation.worker_factory = FakeWorker
@@ -254,7 +255,7 @@ def test_http_snapshot_download_edit_and_owner_are_consistent(root):
     with TestClient(app) as client:
         config = client.get("/api/dictation/config").json()
         assert (config["cleanup_model"], config["cleanup_reasoning_effort"]) == ("gemini-3.5-flash-lite", "medium")
-        assert (config["document_cleanup_model"], config["document_reasoning_effort"]) == ("gemini-3.8-flash-high", "high")
+        assert (config["document_cleanup_model"], config["document_reasoning_effort"]) == ("gpt-6.1-terra", "high")
         assert client.post("/api/dictation/sessions", json={}).status_code == 403
         assert client.post("/api/dictation/sessions", json={"cleanup_model": "wrong"}, headers=headers).status_code == 422
         assert client.post("/api/dictation/sessions", json={"document_cleanup_model": "wrong"}, headers=headers).status_code == 422
@@ -262,12 +263,12 @@ def test_http_snapshot_download_edit_and_owner_are_consistent(root):
         assert client.post("/api/dictation/sessions", json={"document_reasoning_effort": "wrong"}, headers=headers).status_code == 422
         response = client.post("/api/dictation/sessions", json={
             "cleanup_model": "gpt-6-luna", "cleanup_reasoning_effort": "low",
-            "document_cleanup_model": "gpt-6.1-sol", "document_reasoning_effort": "xhigh",
+            "document_cleanup_model": document_model, "document_reasoning_effort": "xhigh",
         }, headers=headers)
         assert response.status_code == 200
         assert response.json()["config"]["cleanup_model"] == "gpt-6-luna"
         assert response.json()["config"]["reasoning_effort"] == "low"
-        assert response.json()["config"]["document_cleanup_model"] == "gpt-6.1-sol"
+        assert response.json()["config"]["document_cleanup_model"] == document_model
         assert response.json()["config"]["document_reasoning_effort"] == "xhigh"
         sid = response.json()["id"]
         with client.websocket_connect(f"/api/dictation/sessions/{sid}/stream", headers=headers) as ws:

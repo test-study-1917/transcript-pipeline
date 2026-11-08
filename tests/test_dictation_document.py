@@ -65,7 +65,27 @@ def test_default_cleanup_payloads_use_the_settings_preset(root, monkeypatch):
         await service.cleanup(state["id"], "owner", CleanupRequest(scope="utterance", utterance_id="1"))
         await service.cleanup(state["id"], "owner", CleanupRequest(scope="document"))
         assert [(payload["model"], payload["reasoning"]["effort"]) for payload in sent] == [
-            ("gemini-3.5-flash-lite", "medium"), ("gemini-3.8-flash-high", "high")]
+            ("gemini-3.5-flash-lite", "medium"), ("gpt-6.1-terra", "high")]
+        await service.close()
+    asyncio.run(run())
+
+
+def test_existing_flash_session_retains_frozen_document_model(root, monkeypatch):
+    sent = []
+    def response(client, payload, **kwargs):
+        sent.append(payload)
+        return json.dumps({"text": "整理后文本。", "needs_review": False})
+    monkeypatch.setattr(GatewayClient, "codex_responses_text", response)
+    async def run():
+        service = DictationService(root)
+        state = await completed(service)
+        for config in (state["config"], state["worker_config"]):
+            config["document_cleanup_model"] = "gemini-3.8-flash-high"
+        service.commit(state)
+        await service.cleanup(state["id"], "owner", CleanupRequest(scope="document"))
+        assert sent[0]["model"] == "gemini-3.8-flash-high"
+        assert sent[0]["reasoning"]["effort"] == "high"
+        assert service.storage.load(state["id"])["worker_config"]["document_cleanup_model"] == "gemini-3.8-flash-high"
         await service.close()
     asyncio.run(run())
 

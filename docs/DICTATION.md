@@ -80,7 +80,7 @@
 
 - CPU：`csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en`，INT8，sherpa-onnx 真正增量识别，每会话使用2个预览计算线程。实际预算记录在 `metrics.cpu_worker.preview_threads`（上传不启用预览时为null）。与批处理 SeACo Paraformer 是不同模型。
 - GPU：注册表中的 Qwen3-ASR 0.6B 固定 revision，由服务共享一个最终识别进程，各会话分别保留 CPU worker。只对完整短句识别，不加载 ForcedAligner，不用第一遍文字提示第二遍。
-- HTTP 网关：逐句快速处理默认使用 `gemini-3.5-flash-lite`、思考强度 `medium`；手动全文整理默认使用 `gemini-3.8-flash-high`、思考强度 `high`。逐句轻度整理默认开启。新会话可独立选择菜单中的其他模型和强度，包括 `gpt-6-luna`、`gpt-6.1-sol`。两者只处理最终识别/当前正文，不重跑 ASR。完整 JSON 校验后才提交，不执行转录中的指令，不自动切供应商。历史会话重试仍使用创建时冻结的模型和强度。
+- HTTP 网关：逐句快速处理默认使用 `gemini-3.5-flash-lite`、思考强度 `medium`；手动全文整理默认使用 `gpt-6.1-terra`、思考强度 `high`。逐句轻度整理默认开启。新会话可独立选择菜单中的其他模型和强度，包括 `gpt-6-luna`、`gpt-6.1-sol`。两者只处理最终识别/当前正文，不重跑 ASR。完整 JSON 校验后才提交，不执行转录中的指令，不自动切供应商。历史会话重试仍使用创建时冻结的模型和强度。
 
 两套提示词分开维护：逐句只轻度修复当前句，全文结合上下文恢复断句、段落和高把握的同音错字；均保留数字、否定、条件、主体、专名与中英混说，不总结或补造事实。疑似听错无法唯一判断时保留原表达并标记复核。
 
@@ -158,7 +158,7 @@ services:
 
 `enabled=false` 阻止新会话，不影响读书会流水线。还可配置 `cpu_python`、`final_python`、`model_dir`、`cleanup_model`、`cleanup_reasoning_effort`、`cleanup_timeout_seconds`、`document_cleanup_model`、`document_reasoning_effort`、`document_cleanup_timeout_seconds`、`decode_timeout_seconds`、`pre_ms`、`silence_ms`、`tail_ms`、`target_seconds`、`hard_seconds`。默认分别为 250ms 前留、700ms 静音、150ms 尾留、20s 软目标、25s 硬上限。硬切分标记需复核，不当作自然句界。
 
-未选择模型和强度时，逐句为 Gemini 3.5 Flash Lite `medium`、全文为 Gemini 3.8 Flash High `high`。设置中的「服务器默认」和「恢复默认」均跟随这些服务端默认值；浏览器已保存的显式选项仍优先，可选回默认以跟随服务器。早期 Luna／`none`／`low` 实测仅保留作历史基线。旧会话自动逐句处理仍用创建时冻结的期限；手动逐句重试及「整理全文」使用当前服务器配置的期限（默认3600秒），模型和强度继续使用会话快照，不回写旧配置。实际期限记在每次结果的 metrics，网页也显示当前校对期限。
+未选择模型和强度时，逐句为 Gemini 3.5 Flash Lite `medium`、全文为 GPT-6.1 Terra `high`。设置中的「服务器默认」和「恢复默认」均跟随这些服务端默认值；浏览器已保存的显式选项仍优先，可选回默认以跟随服务器。早期 Luna／`none`／`low` 实测仅保留作历史基线。旧会话自动逐句处理仍用创建时冻结的期限；手动逐句重试及「整理全文」使用当前服务器配置的期限（默认3600秒），模型和强度继续使用会话快照，不回写旧配置。实际期限记在每次结果的 metrics，网页也显示当前校对期限。
 
 ### 部署多会话版本
 
@@ -244,7 +244,7 @@ ffmpeg -nostdin -n -f s16le -ar 16000 -ac 1 -i /path/to/source.pcm recovered.wav
 
 路由均在 `/api/dictation`：
 
-- `POST /sessions`、`GET /sessions`、`GET /sessions/{id}`。创建请求可分别带 `cleanup_model`、`document_cleanup_model`（`gpt-6-luna` / `gpt-6.1-sol` / `gemini-3.8-flash-high` / `gemini-3.5-flash-lite`）和 `cleanup_reasoning_effort`、`document_reasoning_effort`（`low` / `medium` / `high` / `xhigh` / `max`）；省略时保持各自的服务端默认。
+- `POST /sessions`、`GET /sessions`、`GET /sessions/{id}`。创建请求可分别带 `cleanup_model`、`document_cleanup_model`（`gpt-6.1-terra` / `gpt-6-luna` / `gpt-6.1-sol` / `gemini-3.8-flash-high` / `gemini-3.5-flash-lite`）和 `cleanup_reasoning_effort`、`document_reasoning_effort`（`low` / `medium` / `high` / `xhigh` / `max`）；省略时保持各自的服务端默认。
 - `WS /sessions/{id}/stream`：双向音频与事件。二进制头 `<uint32 sequence, uint64 start_sample>`，后接 16 kHz、单声道、小端 PCM16；正常网络包 80ms，暂停/结束尾包可不足80ms。
   - 暂停：先关闭本地新增采音并 flush 尾包，再在同一 WS 发送 `{type:"pause",next_sequence,samples}`。服务端校验接收边界，CPU 收尾 `boundary=pause`、重置 VAD/预览但不退出，提交 `session.paused`。不提供可能越过音频的独立 HTTP 实时暂停。
   - 继续：先提交正文编辑，再主动申请麦克风但不发布音频；新编辑模式发送 `{type:"resume",next_sequence,samples,document_version,insertion_position}`（旧模式保留原字段）。正文版本、目标锚点与 listening 在一次服务端提交中确认后才开启新采音 lease。目标版本冲突返回 `session.control_rejected`，保持暂停，可同步后重试。样本/包号/句号继续递增；迟到权限、Worklet、连接或终止后的回调不能恢复采音。
@@ -295,7 +295,7 @@ ACK 表示 PCM 与接收位置已持久化。128 包有限恢复窗口内重复�
 
 CPU worker 峰值 RSS 约390 MiB；4线程预览累计约2334 CPU秒/600墙钟秒，不承诺低 CPU 占用。Qwen 的 PyTorch 峰值 allocated 约1.75 GiB，不是全部显存用量；实测 `aligner_loaded=false`。84句中40句被整理模型建议复核，该标记不能代替人工判定。没有人工参考稿，未计算 CER。
 
-同源六条关键文本的 HTTP 对照：Luna `none` P95约5.79秒，Flash-Lite `minimal` 约2.73秒；六例的数字、否定和条件均保留，Flash-Lite 有两例缺末尾句号。它已能通过当前网关的结构化输出请求，但样本不足以建立完整保真结论，该轮保持 Luna none，后续改为 Luna逐句low/全文high；当前默认已改为 Gemini逐句medium/全文high，旧组别的计时不用于当前配置。Gemini 3.8 通道仅公布 `-high` 别名，请求 `low` 能返回，原生 LOW 是否被转发仍未证实。三种模型的实际回报 ID 与 token usage 已通过既有 transport observer 真实读取；不保存原始 HTTP 响应或密钥。
+同源六条关键文本的 HTTP 对照：Luna `none` P95约5.79秒，Flash-Lite `minimal` 约2.73秒；六例的数字、否定和条件均保留，Flash-Lite 有两例缺末尾句号。它已能通过当前网关的结构化输出请求，但样本不足以建立完整保真结论，该轮保持 Luna none，后续改为 Luna逐句low/全文high；当前默认已改为 Gemini逐句medium/Terra全文high，旧组别的计时不用于当前配置。Gemini 3.8 通道仅公布 `-high` 别名，请求 `low` 能返回，原生 LOW 是否被转发仍未证实。三种模型的实际回报 ID 与 token usage 已通过既有 transport observer 真实读取；不保存原始 HTTP 响应或密钥。
 
 已用 Chrome 虚拟麦克风加载真实录音，实际跑通 AudioWorklet、短断线补传、CPU/GPU/LLM、停止释放、编辑/复制、全文建议应用、紧凑小窗和上传/历史/删除；检查了390px截图与动态展开边界。它验证网页采音路径，不替代物理设备和本人口音验收。
 

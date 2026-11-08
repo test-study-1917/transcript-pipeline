@@ -15,7 +15,7 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-CleanupModel = Literal["gpt-6-luna", "gpt-6.1-sol", "gemini-3.8-flash-high", "gemini-3.5-flash-lite"]
+CleanupModel = Literal["gpt-6.1-terra", "gpt-6-luna", "gpt-6.1-sol", "gemini-3.8-flash-high", "gemini-3.5-flash-lite"]
 ReasoningEffort = Literal["low", "medium", "high", "xhigh", "max"]
 
 
@@ -85,7 +85,7 @@ class DictationSettings(StrictModel):
     cleanup_model: str = "gemini-3.5-flash-lite"
     cleanup_reasoning_effort: str = "medium"
     cleanup_timeout_seconds: int = Field(default=3600, ge=1, le=3600)
-    document_cleanup_model: str = "gemini-3.8-flash-high"
+    document_cleanup_model: str = "gpt-6.1-terra"
     document_reasoning_effort: str = "high"
     document_cleanup_timeout_seconds: int = Field(default=3600, ge=1, le=3600)
     decode_timeout_seconds: int = Field(default=900, ge=1, le=3600)

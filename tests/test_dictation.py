@@ -74,7 +74,7 @@ def test_session_model_choices_are_frozen_independently_for_both_cleanup_passes(
         default = await service.create("owner", SessionRequest(), start=False)
         assert default["worker_config"]["qwen_model"] == "Qwen/Qwen3-ASR-0.6B"
         assert default["worker_config"]["cleanup_model"] == "gemini-3.5-flash-lite"
-        assert default["worker_config"]["document_cleanup_model"] == "gemini-3.8-flash-high"
+        assert default["worker_config"]["document_cleanup_model"] == "gpt-6.1-terra"
         assert default["worker_config"]["reasoning_effort"] == "medium"
         assert default["worker_config"]["document_reasoning_effort"] == "high"
         assert default["config"]["cleanup"] is True

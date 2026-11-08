@@ -43,6 +43,7 @@ function resetSettingsToDefault() {
 }
 
 const cleanupModels = [
+  { value: "gpt-6.1-terra", label: "GPT-6.1 Terra" },
   { value: "gpt-6-luna", label: "GPT-6 Luna" },
   { value: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash Lite" },
   { value: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash High" },

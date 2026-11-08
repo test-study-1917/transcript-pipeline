@@ -128,23 +128,25 @@ try {
   await settingsPage.getByRole('button', {name:'设置',exact:true}).click();
   assert(await settingsPage.getByRole('checkbox', {name:'使用逐句轻度整理'}).isChecked());
   for (const [selector,expected] of [['#dictation-cleanup-model','gemini-3.5-flash-lite'],['#dictation-cleanup-effort','medium'],
-    ['#dictation-document-model','gemini-3.8-flash-high'],['#dictation-document-effort','high']]) {
+    ['#dictation-document-model','gpt-6.1-terra'],['#dictation-document-effort','high']]) {
     assert.equal(await settingsPage.locator(selector).inputValue(), '');
     assert((await settingsPage.locator(`${selector} option:checked`).textContent()).includes(expected));
   }
   await settingsPage.locator('#dictation-cleanup-model').selectOption('gpt-6-luna');
   await settingsPage.locator('#dictation-cleanup-effort').selectOption('low');
+  await settingsPage.locator('#dictation-document-model').selectOption('gpt-6.1-terra');
   await settingsPage.reload();
   await settingsPage.getByRole('button', {name:'设置',exact:true}).click();
   assert.equal(await settingsPage.locator('#dictation-cleanup-model').inputValue(), 'gpt-6-luna');
   assert.equal(await settingsPage.locator('#dictation-cleanup-effort').inputValue(), 'low');
+  assert.equal(await settingsPage.locator('#dictation-document-model').inputValue(), 'gpt-6.1-terra');
   await settingsPage.getByRole('button', {name:'恢复默认',exact:true}).click();
   for (const selector of ['#dictation-cleanup-model','#dictation-cleanup-effort','#dictation-document-model','#dictation-document-effort'])
     assert.equal(await settingsPage.locator(selector).inputValue(), '');
   await settingsPage.locator('.dictation-model-grid').scrollIntoViewIfNeeded();
   await settingsPage.screenshot({path:`${output}/default-model-settings.png`,fullPage:true});
   await settingsPage.close();
-  checks.push('settings defaults/reset use Flash Lite medium and Flash High high; saved manual choices survive reload');
+  checks.push('settings defaults/reset use Flash Lite medium and Terra high; saved manual choices survive reload');
 
   const legacyPage = await context.newPage();
   legacyPage.on('pageerror', error => errors.push(error.message));
