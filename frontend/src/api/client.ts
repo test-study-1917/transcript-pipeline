@@ -1,3 +1,5 @@
+import { fetchWithHelp, friendlyErrorMessage, readJsonWithHelp } from '../utils/errorGuidance';
+
 export interface AsrCandidate {
   id: string;
   label: string;
@@ -119,6 +121,7 @@ export interface BatchItemState {
   completed_stages?: string[];
   failed_stage?: string;
   error_message?: string;
+  error_detail?: string;
   copied_output_path?: string;
   ocr_items?: OCRProgressItem[];
   pages_total?: number;
@@ -155,6 +158,7 @@ export interface JobInputSummary {
 }
 
 export interface JobState {
+  error_detail?: string;
   asr_candidate?: string;
   secondary_asr_candidate?: string;
   asr_engine?: string;
@@ -375,7 +379,7 @@ export interface PDFBookOCRTaskListResponse {
   items: PDFBookOCRTask[];
 }
 
-function formatApiError(status: number, rawBody: string): string {
+function apiErrorDetail(status: number, rawBody: string): string {
   if (!rawBody) {
     return `请求失败：HTTP ${status}`;
   }
@@ -404,8 +408,12 @@ function formatApiError(status: number, rawBody: string): string {
   }
 }
 
+function formatApiError(status: number, rawBody: string): string {
+  return friendlyErrorMessage(apiErrorDetail(status, rawBody), status);
+}
+
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetchWithHelp(path, {
     headers: {
       "Content-Type": "application/json",
       ...(init?.headers ?? {}),
@@ -418,7 +426,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(formatApiError(response.status, detail));
   }
 
-  return (await response.json()) as T;
+  return readJsonWithHelp<T>(response);
 }
 
 function buildQuery(params: Record<string, string | number | boolean | undefined | null>): string {
@@ -462,7 +470,7 @@ export async function uploadFile(
   kind: UploadKind,
   options?: { groupId?: string; relativePath?: string },
 ): Promise<UploadResponse> {
-  const response = await fetch(
+  const response = await fetchWithHelp(
     `/api/uploads${buildQuery({
       kind,
       filename: file.name,
@@ -480,7 +488,7 @@ export async function uploadFile(
     throw new Error(formatApiError(response.status, detail));
   }
 
-  return (await response.json()) as UploadResponse;
+  return readJsonWithHelp<UploadResponse>(response);
 }
 
 export function submitPDFBookOCR(payload: PDFBookOCRPayload): Promise<{ task_id: string }> {
@@ -528,7 +536,7 @@ export async function uploadStageInput(
   slotKey: string,
   file: File,
 ): Promise<StageInputUploadResponse> {
-  const response = await fetch(
+  const response = await fetchWithHelp(
     `/api/stage-inputs/${encodeURIComponent(stageName)}/${encodeURIComponent(slotKey)}${buildQuery({ filename: file.name })}`,
     {
       method: "POST",
@@ -541,7 +549,7 @@ export async function uploadStageInput(
     throw new Error(formatApiError(response.status, detail));
   }
 
-  return (await response.json()) as StageInputUploadResponse;
+  return readJsonWithHelp<StageInputUploadResponse>(response);
 }
 
 export function submitJob(payload: SingleJobPayload): Promise<{ job_id: string }> {

@@ -31,6 +31,7 @@ import {
   type ResultDownloadFormat,
 } from "../api/client";
 import JobArtifactsViewer from "./JobArtifactsViewer.vue";
+import ErrorHelp from "./ErrorHelp.vue";
 
 interface IdentityEntry {
   label: string;
@@ -772,6 +773,15 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
         批量任务已产生可下载结果，可下载全部成功产物，也可展开后按子任务分别选择 Markdown 或 TXT。
       </n-alert>
 
+      <ErrorHelp
+        v-if="String(state.error_message ?? '')"
+        :error="String(state.error_message)"
+        :detail="String(state.error_detail ?? '')"
+        :task-id="String(state.id ?? '')"
+        :stage="String(state.current_stage ?? '')"
+        :warning="status === 'partial'"
+      />
+
       <n-collapse-transition :show="expanded">
         <n-flex vertical :size="20" class="status-detail">
           <div v-if="kind === 'job' && state.library_material" class="library-attachments">
@@ -897,7 +907,7 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
                     <span v-if="item.output_dir">输出目录：{{ item.output_dir }}</span>
                     <span v-if="item.failed_stage" class="batch-item-muted">失败阶段：{{ batchItemStageLabel(item.failed_stage) }}</span>
                     <span v-if="item.pages_total">OCR 页进度：{{ item.pages_completed ?? 0 }}/{{ item.pages_total }}</span>
-                    <p v-if="item.error_message" class="batch-item-error">{{ item.error_message }}</p>
+                    <ErrorHelp v-if="item.error_message" :error="item.error_message" :detail="item.error_detail" :task-id="item.job_id" :stage="item.failed_stage" :warning="item.status === 'partial'" />
                   </div>
                   <n-flex align="center" :size="8" wrap class="batch-item-actions">
                     <n-tag size="small" :type="itemStatusType(item.status)" :bordered="false">
@@ -1041,15 +1051,6 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
             </template>
           </n-descriptions>
 
-          <n-alert
-            v-if="String(state.error_message ?? '')"
-            class="status-card__error"
-            :type="status === 'partial' ? 'warning' : 'error'"
-            :title="`流水线执行错误报告`"
-            :bordered="false"
-          >
-            <p class="error-text-content">{{ String(state.error_message) }}</p>
-          </n-alert>
         </n-flex>
       </n-collapse-transition>
     </n-flex>

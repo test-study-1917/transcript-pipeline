@@ -21,6 +21,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
 
 import { getBatch, getRefineDefaultInstruction, listFs, submitBatchJob, type FileItem, type JobState } from "../api/client";
 import FastModeSwitch from "../components/FastModeSwitch.vue";
+import ErrorHelp from "../components/ErrorHelp.vue";
 import ProfileSelector from "../components/ProfileSelector.vue";
 import AsrCandidateSelector from "../components/AsrCandidateSelector.vue";
 import RemoteDirectoryUpload from "../components/RemoteDirectoryUpload.vue";
@@ -794,7 +795,7 @@ onBeforeUnmount(stopPolling);
           </div>
         </div>
 
-        <n-alert v-if="batchState.error_message" type="error" :title="batchState.error_message" :bordered="false" class="glass-alert" />
+        <ErrorHelp v-if="batchState.error_message" :error="batchState.error_message" :task-id="batchState.id" :stage="batchState.current_stage" />
         
         <!-- Batch Sub-jobs List -->
         <div v-if="batchItems.length" class="sub-jobs-section">
@@ -822,7 +823,7 @@ onBeforeUnmount(stopPolling);
                 <div class="grid-cell span-all"><span class="cell-label">参考源:</span> <span class="mono-path">{{ String(item.reference_source ?? "") || "无" }}</span></div>
                 <div class="grid-cell span-all"><span class="cell-label">输出路径:</span> <span class="mono-path is-out">{{ String(item.copied_output_path ?? "-") || "-" }}</span></div>
                 <div v-if="String(item.error_message ?? '')" class="grid-cell span-all err-cell">
-                  <span class="cell-label">错误详情:</span> {{ String(item.error_message) }}
+                  <ErrorHelp :error="String(item.error_message)" :detail="item.error_detail" :task-id="String(item.job_id ?? '')" :stage="String(item.failed_stage ?? '')" :warning="item.status === 'partial'" />
                 </div>
               </div>
             </div>

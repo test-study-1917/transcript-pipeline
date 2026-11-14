@@ -4,6 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import { NButton, NModal, useMessage } from "naive-ui";
 import { useDictation, type Utterance } from "../composables/useDictation";
 import FileDropZone from "../components/FileDropZone.vue";
+import ErrorHelp from "../components/ErrorHelp.vue";
 import DictationEditor from "../components/DictationEditor.vue";
 import RecordingDraftPane from "../components/RecordingDraftPane.vue";
 import { validateTerms } from "../composables/dictationTerms";
@@ -430,7 +431,7 @@ onBeforeUnmount(() => {
       </section>
 
       <template #footer>
-        <p v-if="error" class="dictation-error" role="alert">{{ error }}</p>
+        <ErrorHelp v-if="error" :error="error" :task-id="session?.id" context="录音或上传中断后，请先查看历史状态并保留当前文字，再决定是否重试。" />
         <div class="settings-footer-actions">
           <span class="dictation-status">设置自动保存到本浏览器</span>
           <div class="dictation-actions">
@@ -442,7 +443,7 @@ onBeforeUnmount(() => {
     </n-modal>
 
     <!-- Global alert messages -->
-    <p v-if="error && !settingsOpen" class="dictation-error" role="alert">{{ error }}</p>
+    <ErrorHelp v-if="error && !settingsOpen" :error="error" :task-id="session?.id" context="录音或上传中断后，请先查看历史状态并保留当前文字，再决定是否重试。" />
     <p v-if="d.inputWarning.value" class="dictation-status-banner" role="status">{{ d.inputWarning.value }}</p>
 
     <!-- Tab 2: Local recording drafts -->
@@ -619,7 +620,7 @@ onBeforeUnmount(() => {
         本窗口可编辑正文；暂停、继续请返回原录音窗口。
       </p>
       <p v-if="connection" class="dictation-status" role="status">{{ connection }}</p>
-      <p v-if="session?.document_cleanup_error && !error" class="dictation-error" role="alert">{{ session.document_cleanup_error }}</p>
+      <ErrorHelp v-if="session?.document_cleanup_error && !error" :error="session.document_cleanup_error" :task-id="session.id" />
 
       <!-- Sentence records drawer / section -->
       <section v-if="recordsOpen && session" class="dictation-records" aria-label="识别记录">
@@ -642,7 +643,7 @@ onBeforeUnmount(() => {
           </header>
           <p class="record-raw"><span>原始识别：</span>{{ u.raw_text || u.preview || '等待识别' }}</p>
           <p v-if="u.cleaned_text || u.suggestion" class="record-cleaned"><span>整理建议：</span>{{ u.suggestion || u.cleaned_text }}</p>
-          <p v-if="u.error" class="dictation-error">{{ u.error }}</p>
+          <ErrorHelp v-if="u.error" :error="u.error" :task-id="session.id" />
         </article>
       </section>
 

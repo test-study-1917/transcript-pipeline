@@ -1,5 +1,10 @@
 # 工作台浏览器检查
 
+错误提示检查：`npm --prefix frontend run test:error-help` 无需浏览器。
+上文隔离 API／Vite 启动后，可用 `WORKBENCH_URL=http://127.0.0.1:15179 node frontend/tests/error-help.mjs`
+检查提示、技术详情、剪贴板、手机布局与断网；隔离工作区如含连接重置失败的只读样例会使用该记录，
+否则使用受控样例，不会触发模型。`WORKBENCH_OUTPUT` 指定截图输出；`ERROR_HELP_FONT` 可指定中文字体。实测记录见 `docs/ERROR_HELP.md`。
+
 使用项目 `.venv` 和已安装的前端依赖。以下命令分别在终端运行，`TEST_ROOT` 必须是新建的临时目录，不能指向真实任务数据。
 
 ```bash

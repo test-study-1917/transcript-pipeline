@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from typing import Callable
+from src.stage_error import report_stage_error
 
 from src.align_utils import AlignmentError, align_batch, summarize_alignment_results
 from src.asr_utils import AsrTranscriptionError, summarize_transcription_results, transcribe_batch
@@ -86,7 +87,7 @@ def run_stage(
         try:
             results = operations.extract_audio_batch(loaded_settings, logger=logger)
         except AudioExtractionError as exc:
-            logger.error("%s", exc)
+            report_stage_error(logger, loaded_settings, stage_name, exc)
             return 1
 
         log_stage_completion(logger, stage_name, operations.summarize_extraction_results(results), started_at)
@@ -96,7 +97,7 @@ def run_stage(
         try:
             outputs = operations.transcribe_batch(loaded_settings, logger=logger)
         except AsrTranscriptionError as exc:
-            logger.error("%s", exc)
+            report_stage_error(logger, loaded_settings, stage_name, exc)
             return 1
 
         log_stage_completion(logger, stage_name, operations.summarize_transcription_results(outputs), started_at)
@@ -111,7 +112,7 @@ def run_stage(
                 **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
             )
         except ReferencePreparationError as exc:
-            logger.error("%s", exc)
+            report_stage_error(logger, loaded_settings, stage_name, exc)
             return STAGE_EXIT_FAILED
 
         log_stage_completion(logger, stage_name, operations.summarize_reference_results(summary), started_at)
@@ -125,7 +126,7 @@ def run_stage(
         try:
             summary = operations.align_batch(loaded_settings, logger=logger)
         except AlignmentError as exc:
-            logger.error("%s", exc)
+            report_stage_error(logger, loaded_settings, stage_name, exc)
             return 1
 
         log_stage_completion(logger, stage_name, operations.summarize_alignment_results(summary), started_at)
@@ -135,7 +136,7 @@ def run_stage(
         try:
             summary = operations.classify_batch(loaded_settings, logger=logger)
         except ClassificationError as exc:
-            logger.error("%s", exc)
+            report_stage_error(logger, loaded_settings, stage_name, exc)
             return 1
 
         log_stage_completion(logger, stage_name, operations.summarize_classification_results(summary), started_at)
@@ -147,7 +148,7 @@ def run_stage(
             summary = operations.refine_batch(loaded_settings, requested_backends=requested_backends, logger=logger,
                 **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}))
         except RefinementError as exc:
-            logger.error("%s", exc)
+            report_stage_error(logger, loaded_settings, stage_name, exc)
             return 1
 
         log_stage_completion(logger, stage_name, operations.summarize_refinement_results(summary), started_at)
@@ -157,7 +158,7 @@ def run_stage(
         try:
             summary = operations.export_markdown_batch(loaded_settings, logger=logger)
         except ExportError as exc:
-            logger.error("%s", exc)
+            report_stage_error(logger, loaded_settings, stage_name, exc)
             return 1
 
         log_stage_completion(logger, stage_name, operations.summarize_export_results(summary), started_at)

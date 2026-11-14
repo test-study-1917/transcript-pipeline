@@ -34,6 +34,7 @@ import {
   type PDFBookOCRTask,
 } from "../api/client";
 import RemoteDirectoryUpload from "../components/RemoteDirectoryUpload.vue";
+import ErrorHelp from "../components/ErrorHelp.vue";
 import FastModeSwitch from "../components/FastModeSwitch.vue";
 import RemoteFileUpload from "../components/RemoteFileUpload.vue";
 
@@ -517,14 +518,13 @@ onBeforeUnmount(stopPolling);
               <span v-if="isTaskRunning">识别结束后可打包下载或删除项目。</span>
             </n-flex>
 
-            <n-alert
+            <ErrorHelp
               v-if="currentTask.error_message"
-              :type="currentTask.status === 'partial' ? 'warning' : 'error'"
-              :bordered="false"
-              class="pdf-book-ocr-task__error"
-            >
-              {{ currentTask.error_message }}
-            </n-alert>
+              :error="currentTask.error_message"
+              :task-id="currentTask.id"
+              :warning="currentTask.status === 'partial'"
+              context="书页识别未完成时，可使用本页的“重试缺失页”。"
+            />
 
             <div v-if="canRetryMissingPages" class="pdf-book-ocr-task__retry">
               <n-button type="warning" secondary :loading="retrying" @click="retryMissingPages">
@@ -546,7 +546,7 @@ onBeforeUnmount(stopPolling);
                   </span>
                   <span v-else-if="item.success" class="pdf-book-ocr-result-item__meta">{{ item.text_length }} 字</span>
                 </div>
-                <p v-if="!item.success" class="pdf-book-ocr-result-item__error">{{ item.error || 'OCR 未返回结果。' }}</p>
+                <ErrorHelp v-if="!item.success" :error="item.error || 'OCR 未返回结果'" :task-id="currentTask.id" context="可使用“重试缺失页”补齐这本书尚未完成的页面。" />
                 <div v-if="item.failed_page_numbers?.length" class="pdf-book-ocr-result-item__pages">
                   <strong>待重试页：</strong>
                   <span>{{ item.failed_page_numbers.join('、') }}</span>

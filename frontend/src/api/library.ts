@@ -1,3 +1,5 @@
+import { fetchWithHelp, friendlyErrorMessage, readJsonWithHelp } from '../utils/errorGuidance';
+
 /**
  * Library API client.
  *
@@ -130,7 +132,7 @@ export class LibraryApiError extends Error {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`/api/library${path}`, init);
+  const response = await fetchWithHelp(`/api/library${path}`, init);
   if (!response.ok) {
     const body = await response.text();
     let message = body;
@@ -140,9 +142,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     } catch {
       // Keep raw body if response is not JSON
     }
-    throw new LibraryApiError(message || `请求失败：HTTP ${response.status}`, response.status);
+    throw new LibraryApiError(friendlyErrorMessage(message, response.status), response.status);
   }
-  return response.json() as Promise<T>;
+  return readJsonWithHelp<T>(response);
 }
 
 function json(method: string, payload: unknown): RequestInit {

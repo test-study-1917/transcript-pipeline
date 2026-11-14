@@ -20,6 +20,7 @@ from src.job_runner import create_batch_id, create_job_id, supported_reference_e
 from src.refine_utils import PromptLoadError, VALID_REFINEMENT_BACKENDS, load_markdown_assemble_prompt
 from src.runtime_utils import normalize_stage_name
 from src.web.artifacts import collect_job_artifacts, read_job_artifact
+from src.web.error_details import enrich_error_details
 from src.web.downloads import (
     build_batch_result_archive,
     build_result_download,
@@ -129,6 +130,7 @@ def batch_job_input_summary(request: BatchJobRequest) -> dict[str, str]:
 
 
 def enrich_state_input_summary(project_root: Path, state: dict[str, Any]) -> dict[str, Any]:
+    state = enrich_error_details(project_root, state)
     # Display actual artifacts or this job's snapshot, never today's defaults.
     identifier = str(state.get("id") or "")
     if state.get("kind") == "job" and identifier not in {"", ".", ".."} and "/" not in identifier and "\\" not in identifier:

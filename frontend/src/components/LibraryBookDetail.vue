@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ErrorHelp from './ErrorHelp.vue';
 import { computed, onMounted, ref, watch } from "vue";
 import {
   NAlert,
@@ -486,9 +487,7 @@ onMounted(() => void loadPage(1, true));
 
         <p v-if="loading" role="status" class="loading-hint">正在读取页面文字…</p>
         <template v-else-if="page">
-          <n-alert v-if="page.ocr_status === 'failed'" type="error" :bordered="false">
-            识别失败：{{ page.error || '请重试本页。' }}
-          </n-alert>
+          <ErrorHelp v-if="page.ocr_status === 'failed'" :error="page.error || 'OCR 失败'" :task-id="String(book.id)" context="可使用当前书页的重新识别操作，再检查页面文字。" />
           <p v-if="page.current_revision_id === null" class="muted">
             尚未识别。也可以直接输入文字；保存空白文本会确认这是空白页。
           </p>
