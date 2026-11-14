@@ -159,17 +159,23 @@ def test_two_pass_requires_supported_backend_and_second_policy(tmp_path, monkeyp
                         options=RefinementOptions(refinement_mode="terra_terra"), backends=[backend], logs_dir=tmp_path)
 
 
-@pytest.mark.parametrize("transport", ["urllib", "curl"])
+@pytest.mark.parametrize("transport", ["urllib", "curl", "http1.1"])
 def test_both_actual_local_requests_send_fixed_priority_and_effort(tmp_path, monkeypatch, transport):
     monkeypatch.setattr("src.llm.gateway.should_use_curl_first", lambda url: transport == "curl")
-    with fixed_gateway() as (url, requests):
+    with fixed_gateway(http_version="HTTP/1.1") as (url, requests):
         refine_document("ASR_ONLY_MARKER。", title="offline", reference_text="OCR_ONLY_MARKER。",
             prompt="内容政策", polish_prompt="书面政策", options=RefinementOptions(refinement_mode="terra_terra", fast_mode=False),
-            gateway=GatewayClient(GatewayConnection(url, "local-only")), logs_dir=tmp_path, workdir=tmp_path)
+            gateway=GatewayClient(GatewayConnection(url, "local-only", http_version="1.1" if transport == "http1.1" else "auto")),
+            logs_dir=tmp_path, workdir=tmp_path)
     assert [r["payload"]["model"] for r in requests] == [TERRA_MODEL, TERRA_MODEL]
     assert [r["payload"]["reasoning"]["effort"] for r in requests] == ["high", "xhigh"]
     assert all(r["payload"]["service_tier"] == "priority" and r["payload"]["store"] is False for r in requests)
     assert "ASR_ONLY_MARKER" not in requests[1]["payload"]["input"] and "OCR_ONLY_MARKER" not in requests[1]["payload"]["input"]
+    if transport == "http1.1":
+        records = [json.loads(path.read_text())["transports"][0] for path in tmp_path.rglob("transport.json")]
+        assert len(records) == 2
+        assert all(record["requested_http_version"] == "1.1" and record["metrics"]["http_version"] == "1.1"
+                   for record in records)
 
 
 @pytest.mark.parametrize("backends", [["codex_cli"], ["codex_api", "agy"]])

@@ -6,6 +6,7 @@ import pytest
 
 from src.codex_lb_client import CodexLBClient, endpoint_url
 from src.schemas import CodexLBSettings
+from src.llm.connection import GatewayConnection, connection_from_settings
 
 
 @pytest.mark.parametrize(
@@ -36,6 +37,17 @@ def test_gateway_defaults_use_standard_responses_api() -> None:
     assert settings.responses_path == settings.codex_responses_path == "/v1/responses"
     assert settings.base_url_env == "CODEX_LB_BASE_URL"
     assert settings.api_key_env == "CODEX_LB_API_KEY"
+    assert settings.http_version == "auto"
+
+
+def test_http_version_configuration_rejects_invalid_values():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        CodexLBSettings(http_version="2")
+    with pytest.raises(ValueError, match="http_version"):
+        GatewayConnection("http://localhost", http_version="2")
+    connection = connection_from_settings(CodexLBSettings(http_version="1.1"), environ={})
+    assert connection.http_version == "1.1"
 
 
 def test_explicit_legacy_codex_endpoint_is_still_honored(monkeypatch: pytest.MonkeyPatch) -> None:

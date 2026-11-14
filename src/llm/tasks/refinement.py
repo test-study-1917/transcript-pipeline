@@ -1068,6 +1068,7 @@ def run_codex_api_payload(
                 "stream": True,
                 "store": False,
                 "timeout_seconds": llm_settings.timeout_seconds,
+                "http_version": client.connection.http_version,
                 "endpoint": endpoint_metadata(request_endpoint),
                 "api_key_env": client.connection.api_key_env,
                 "payload_fields": sorted(payload),

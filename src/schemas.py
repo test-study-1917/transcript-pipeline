@@ -211,6 +211,7 @@ class CodexLBSettings(AppBaseModel):
     base_url: str = "http://127.0.0.1:8317"
     base_url_env: str = "CODEX_LB_BASE_URL"
     api_key_env: str = "CODEX_LB_API_KEY"
+    http_version: Literal["auto", "1.1"] = "auto"
     responses_path: str = "/v1/responses"
     codex_responses_path: str = "/v1/responses"
     files_create_path: str = "/backend-api/files"

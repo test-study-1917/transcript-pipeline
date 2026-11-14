@@ -143,6 +143,7 @@ class CodexLBClient:
                 timeout_seconds=self.timeout_seconds,
                 use_curl_first=self.total_timeout or should_use_curl_first(self.base_url),
                 proxy_settings=self.connection.proxy,
+                http_version=self.connection.http_version,
             ),
             label=label,
         )
@@ -177,6 +178,7 @@ class CodexLBClient:
             timeout_seconds=self.timeout_seconds,
             use_curl_first=self.total_timeout or should_use_curl_first(self.base_url),
             proxy_settings=self.connection.proxy,
+            http_version=self.connection.http_version,
             request_trace=request_trace,
         )
         if request_trace is not None:
@@ -213,6 +215,7 @@ class CodexLBClient:
             timeout_seconds=self.timeout_seconds,
             use_curl_first=self.total_timeout or should_use_curl_first(upload_url),
             proxy_settings=self.connection.proxy,
+            http_version=self.connection.http_version,
         )
 
 
@@ -251,16 +254,20 @@ def read_http_response(
     use_curl_first: bool = False,
     proxy_settings: ProxySettings | None = None,
     request_trace: RequestTrace | None = None,
+    http_version: str = "auto",
 ) -> str:
+    if http_version not in {"auto", "1.1"}:
+        raise ValueError("http_version 必须为 auto 或 1.1")
     if proxy_settings is not None:
         request.gateway_proxy = proxy_settings
-    if use_curl_first:
+    if use_curl_first or http_version == "1.1":
         return read_http_response_with_curl(
             request,
             label=label,
             timeout_seconds=timeout_seconds,
             request_trace=request_trace,
             proxy_settings=proxy_settings,
+            http_version=http_version,
         )
 
     started_at = trace_now_iso()
@@ -320,6 +327,7 @@ def read_http_response(
                 timeout_seconds=timeout_seconds,
                 request_trace=request_trace,
                 proxy_settings=proxy_settings,
+                http_version=http_version,
             )
         raise CodexLBClientError(f"{label} HTTP {exc.code}: {safe_body or exc.reason}") from exc
     except IncompleteRead as exc:
@@ -411,7 +419,10 @@ def read_http_response_with_curl(
     timeout_seconds: float | None,
     request_trace: RequestTrace | None = None,
     proxy_settings: ProxySettings | None = None,
+    http_version: str = "auto",
 ) -> str:
+    if http_version not in {"auto", "1.1"}:
+        raise ValueError("http_version 必须为 auto 或 1.1")
     # 用户的远程 codex-lb 反代域会用 Cloudflare 1010 拦截 Python urllib 的 TLS/客户端指纹；
     # curl 已验证可通过同一 API 入口和远程文件上传 URL，因此远程地址优先使用 curl，本地仍走 urllib。
     body_path: Path | None = None
@@ -437,6 +448,8 @@ def read_http_response_with_curl(
             "--write-out",
             build_curl_write_out_format(),
         ]
+        if http_version == "1.1":
+            command.append("--http1.1")
         if timeout_seconds is not None:
             command.extend(["--max-time", str(timeout_seconds)])
         if body_path is not None:
@@ -506,6 +519,7 @@ def read_http_response_with_curl(
     stderr = redact_request_secrets(raw_stderr.strip(), request)
     common_record = {
         "transport": "curl",
+        "requested_http_version": http_version,
         "started_at": started_at,
         "finished_at": trace_now_iso(),
         "duration_seconds": round(time.monotonic() - started, 6),

@@ -28,11 +28,13 @@ from src.web.frontend_settings import (
 
 
 @contextmanager
-def fixed_gateway(label="gateway"):
+def fixed_gateway(label="gateway", *, http_version="HTTP/1.0"):
     """An actual local HTTP/SSE endpoint; can also act as a forwarding proxy."""
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
+        protocol_version = http_version
+
         def do_POST(self):
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append({"path": self.path, "authorization": self.headers.get("Authorization"), "payload": payload})

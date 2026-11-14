@@ -5,7 +5,7 @@ import base64
 import os
 import socket
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 from urllib.parse import unquote, urlparse
 from urllib.request import ProxyHandler, Request, _parse_proxy, build_opener, proxy_bypass_environment
 
@@ -57,6 +57,11 @@ class GatewayConnection:
     files_create_path: str = "/backend-api/files"
     files_finalize_path_template: str = "/backend-api/files/{file_id}/uploaded"
     api_key_env: str = ""
+    http_version: Literal["auto", "1.1"] = "auto"
+
+    def __post_init__(self) -> None:
+        if self.http_version not in {"auto", "1.1"}:
+            raise ValueError("http_version 必须为 auto 或 1.1")
 
 
 def connection_from_settings(
@@ -83,6 +88,7 @@ def connection_from_settings(
         responses_path=settings.responses_path, codex_responses_path=settings.codex_responses_path,
         files_create_path=settings.files_create_path, files_finalize_path_template=settings.files_finalize_path_template,
         api_key_env=key_env,
+        http_version=getattr(settings, "http_version", "auto"),
     )
 
 

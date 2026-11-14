@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from src.config_loader import load_settings
-from src.refine_utils import CLIBackendError, run_codex_api_payload
+from src.refine_utils import CLIBackendError, run_codex_api_payload, runtime_from_settings
+from src.llm.gateway import GatewayClient
 from src.request_trace import RequestTrace, describe_refine_attempt
 from tests.helpers import write_minimal_settings
 
@@ -36,6 +38,58 @@ def build_completed_sse(output_text: str, *, response_id: str = "resp_test_trace
         f"event: response.output_text.delta\ndata: {delta}\n\n"
         f"event: response.completed\ndata: {completed}\n\n"
     )
+
+
+@pytest.mark.parametrize("http_version", ["auto", "1.1"])
+@pytest.mark.parametrize("outcome", ["completed", "reset", "truncated"])
+def test_explicit_http_version_preserves_completion_checks_and_failure_evidence(
+    tmp_path, monkeypatch, http_version, outcome,
+):
+    write_minimal_settings(tmp_path)
+    settings = load_settings(project_root=tmp_path)
+    settings.settings.codex_lb.http_version = http_version
+    monkeypatch.setenv("CODEX_LB_API_KEY", "test-secret-key")
+    runtime = runtime_from_settings(settings)
+    runtime = replace(runtime, gateway=GatewayClient(
+        runtime.gateway.connection, timeout_seconds=3,
+        require_stream_completed=True, total_timeout=True,
+    ))
+    payload = {"final_markdown": "# 标题\n\n完整正文"}
+    stream = build_completed_sse(json.dumps(payload, ensure_ascii=False))
+    if outcome != "completed":
+        stream = stream.split("event: response.completed")[0]
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert ("--http1.1" in command) == (http_version == "1.1")
+        assert not any(arg.startswith("--retry") for arg in command)
+        assert "test-secret-key" not in " ".join(command)
+        actual_version = "1.1" if http_version == "1.1" else "2"
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            returncode=56 if outcome == "reset" else 0,
+            stderr="curl: (56) Recv failure: Connection reset by peer" if outcome == "reset" else "",
+            stdout=stream + f"\n200\t127.0.0.1\t443\t127.0.0.1\t43122\t{actual_version}\t0.001\t0.002\t0.003\t0.100\t1.000\t128",
+        )
+
+    monkeypatch.setattr("src.llm.gateway.subprocess.run", run)
+    trace = RequestTrace(tmp_path / "trace")
+    if outcome == "completed":
+        result = run_codex_api_payload("校对正文", runtime, request_trace=trace)
+        assert result["final_markdown"] == payload["final_markdown"]
+    else:
+        with pytest.raises(CLIBackendError):
+            run_codex_api_payload("校对正文", runtime, request_trace=trace)
+    assert len(calls) == 1
+    meta = json.loads((trace.directory / "request-meta.json").read_text())
+    transport = json.loads((trace.directory / "transport.json").read_text())["transports"][0]
+    assert meta["http_version"] == transport["requested_http_version"] == http_version
+    assert transport["metrics"]["http_version"] == ("1.1" if http_version == "1.1" else "2")
+    assert (trace.directory / "raw-response.sse").read_text() == stream
+    if outcome != "completed":
+        assert (trace.directory / "backend-error.json").exists()
+        assert not (trace.directory / "parsed-output.json").exists()
 
 
 @pytest.mark.parametrize("base_url", ["http://127.0.0.1:2455", "http://127.0.0.1:2455/v1/"])
