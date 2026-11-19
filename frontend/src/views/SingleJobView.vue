@@ -18,6 +18,7 @@ import {
 } from "naive-ui";
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch, nextTick } from "vue";
 
+import { isTaskActive } from "../api/taskStatus";
 import { getJob, getRefineDefaultInstruction, type JobState, submitJob } from "../api/client";
 import FastModeSwitch from "../components/FastModeSwitch.vue";
 import JobStatusCard from "../components/JobStatusCard.vue";
@@ -145,7 +146,7 @@ function stopPolling() {
 async function refreshJob(jobId: string) {
   const state = await getJob(jobId);
   jobState.value = state;
-  if (state.status === "success" || state.status === "partial" || state.status === "failed") {
+  if (!isTaskActive(state.status)) {
     stopPolling();
   }
 }
@@ -432,7 +433,7 @@ onBeforeUnmount(stopPolling);
         </n-card>
       </aside>
     </n-form>
-    <JobStatusCard v-if="jobState" title="当前任务" :state="jobState" default-expanded @rerun="handleJobRerun" />
+    <JobStatusCard v-if="jobState" title="当前任务" :state="jobState" default-expanded @rerun="handleJobRerun" @updated="(next) => { if (jobState?.id === next.id) jobState = next; }" />
   </div>
 </template>
 

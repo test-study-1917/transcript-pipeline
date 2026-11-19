@@ -259,6 +259,10 @@ def install_library(app: FastAPI, root: Path) -> None:
     async def get_job(job_id: str):
         return await _call(service.get_job, job_id)
 
+    @app.post(prefix + "/jobs/{job_id}/stop", status_code=202)
+    async def stop_job(job_id: str):
+        return await _call(service.stop_job, job_id)
+
     @app.post(prefix + "/jobs/{job_id}/resume", status_code=202)
     async def resume_job(job_id: str):
         return await _call(service.resume_job, job_id)

@@ -3,6 +3,7 @@ import { NAlert, NButton, NEmpty, NInput, NSpace, NTabs, NTabPane, useMessage } 
 import { computed, onMounted, onUnmounted, ref } from "vue";
 
 import { listBatches, listJobs, listStageRuns, type JobState } from "../api/client";
+import { isTaskActive, taskStatusLabel } from "../api/taskStatus";
 import JobStatusCard from "../components/JobStatusCard.vue";
 
 const message = useMessage();
@@ -14,12 +15,12 @@ const pollHandle = ref<number | null>(null);
 const loadError = ref("");
 const search = ref("");
 const searchTerms = computed(() => search.value.normalize("NFKC").toLocaleLowerCase().trim().split(/\s+/u).filter(Boolean));
-const statusLabels: Record<string, string> = { pending: "等待中", running: "运行中", success: "成功 已完成", failed: "失败", partial: "部分完成" };
+
 function matchingRecords<T extends JobState>(records: T[]): T[] {
   if (!searchTerms.value.length) return records;
   return records.filter(item => {
     const text = [
-      item.id, item.status, statusLabels[item.status], item.current_stage, item.output_path, item.download_name,
+      item.id, item.status, taskStatusLabel(item.status), item.status === "success" ? "成功" : "", item.current_stage, item.output_path, item.download_name,
       ...Object.values(item.input_summary ?? {}),
       ...(item.items ?? []).flatMap(child => [child.job_id, child.video_source, child.reference_source, child.book_name, child.chapter, child.output_dir]),
     ].filter(Boolean).join(" ").normalize("NFKC").toLocaleLowerCase();
@@ -34,7 +35,7 @@ const matchedCount = computed(() => filteredJobs.value.length + filteredBatches.
 const totalCount = computed(() => jobs.value.length + batches.value.length + stageRuns.value.length);
 const hasRunningRecords = computed(() => {
   return [...jobs.value, ...batches.value, ...stageRuns.value].some((item) => {
-    return item.status === "running" || item.status === "pending";
+    return isTaskActive(item.status);
   });
 });
 
@@ -116,6 +117,7 @@ onUnmounted(stopPolling);
             :state="item"
             @deleted="load"
             @rerun="handleRerun"
+            @updated="load"
           />
         </n-space>
       </n-tab-pane>
@@ -128,6 +130,7 @@ onUnmounted(stopPolling);
             :state="item"
             @deleted="load"
             @rerun="handleRerun"
+            @updated="load"
           />
         </n-space>
       </n-tab-pane>
@@ -140,6 +143,7 @@ onUnmounted(stopPolling);
             :state="item"
             @deleted="load"
             @rerun="handleRerun"
+            @updated="load"
           />
         </n-space>
       </n-tab-pane>

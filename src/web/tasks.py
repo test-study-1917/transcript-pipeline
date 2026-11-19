@@ -5,6 +5,7 @@ import threading
 import yaml
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 from fastapi import FastAPI
@@ -62,6 +63,8 @@ from src.web.stage_file_runs import (
     build_stage_result_archive,
     place_stage_inputs,
 )
+from src.task_stop import TaskStopped, check_task_stop
+from src.web.task_control import mark_task_stopped, task_stop_event
 from src.web.state_store import create_initial_state, read_json_file, write_json_file
 
 
@@ -158,13 +161,6 @@ def update_reference_progress_state(
         pages_failed=sum(int(entry["failed_pages"]) for entry in items),
         resumable=any(bool(entry["resumable"]) for entry in items),
     )
-
-
-def submit_task(fastapi_app: FastAPI, func, **kwargs) -> None:
-    if fastapi_app.state.run_tasks_inline:
-        func(**kwargs)
-        return
-    fastapi_app.state.executor.submit(func, **kwargs)
 
 
 def read_job_manifest(manifest_path: Path) -> dict[str, Any]:
@@ -281,12 +277,14 @@ def update_batch_item_state(
     failed_count = sum(1 for item in updated_items if isinstance(item, dict) and item.get("status") == "failed")
     partial_count = sum(1 for item in updated_items if isinstance(item, dict) and item.get("status") == "partial")
     requested_status = str(batch_changes.pop("status", "") or "")
-    if requested_status == "running":
-        next_status = "running"
+    if requested_status in {"running", "stopped"}:
+        next_status = requested_status
     elif partial_count:
         next_status = "partial"
     elif failed_count:
         next_status = "failed"
+    elif any(item.get("status") == "stopped" for item in updated_items if isinstance(item, dict)):
+        next_status = "stopped"
     else:
         next_status = "success"
     updated_state = app.state.update_state(
@@ -303,11 +301,13 @@ def update_batch_item_state(
     return updated_state
 
 
-def run_job_rerun(*, app: FastAPI, job_id: str, payload: dict, state_path: Path) -> dict[str, Any]:
+def run_job_rerun(*, app: FastAPI, job_id: str, payload: dict, state_path: Path,
+                  stop_event: Event | None = None) -> dict[str, Any]:
     root = app.state.project_root
     ensure_job_state_file(state_path, job_id)
 
     try:
+        check_task_stop(stop_event)
         request = JobRerunRequest.model_validate(payload)
         frontend_settings = load_frontend_settings(root)
         # A changed global profile can change Whisper's model too. Historical
@@ -377,6 +377,7 @@ def run_job_rerun(*, app: FastAPI, job_id: str, payload: dict, state_path: Path)
         )
         gateway_connection = gateway_connection_for_frontend(loaded_settings.settings.codex_lb, frontend_settings)
         for stage_name in stages:
+            check_task_stop(stop_event)
             app.state.update_state(
                 state_path,
                 status="running",
@@ -392,7 +393,9 @@ def run_job_rerun(*, app: FastAPI, job_id: str, payload: dict, state_path: Path)
                     reference_progress if stage_name == "prepare-reference" else None
                 ),
                 gateway_connection=gateway_connection,
+                **({"stop_event": stop_event} if stop_event is not None else {}),
             )
+            check_task_stop(stop_event)
             if exit_code == STAGE_EXIT_PARTIAL:
                 app.state.update_state(
                     state_path,
@@ -436,6 +439,8 @@ def run_job_rerun(*, app: FastAPI, job_id: str, payload: dict, state_path: Path)
             error_message="",
             resumable=False,
         )
+    except TaskStopped:
+        mark_task_stopped(app, state_path, resumable=read_json_file(state_path).get("current_stage") == "prepare-reference")
     except (ConfigLoadError, JobRunnerError, ValueError, OSError) as exc:
         app.state.update_state(
             state_path,
@@ -449,8 +454,10 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
     state_path = app.state.job_state_path(job_id)
     root = app.state.project_root
 
+    stop_event = task_stop_event(app, job_id)
     app.state.active_jobs.add(job_id)
     try:
+        check_task_stop(stop_event)
         request = SingleJobRequest.model_validate(payload)
         frontend_settings = load_frontend_settings(root)
         effective_profile = first_text(request.profile, frontend_settings.profile)
@@ -542,6 +549,7 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
 
         gateway_connection = gateway_connection_for_frontend(job_loaded_settings.settings.codex_lb, frontend_settings)
         for stage_name in stages:
+            check_task_stop(stop_event)
             app.state.update_state(
                 state_path,
                 status="running",
@@ -557,7 +565,9 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
                     reference_progress if stage_name == "prepare-reference" else None
                 ),
                 gateway_connection=gateway_connection,
+                **({"stop_event": stop_event} if stop_event is not None else {}),
             )
+            check_task_stop(stop_event)
             if exit_code == STAGE_EXIT_PARTIAL:
                 app.state.update_state(
                     state_path,
@@ -593,6 +603,8 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
             error_message="",
             resumable=False,
         )
+    except TaskStopped:
+        mark_task_stopped(app, state_path, resumable=read_json_file(state_path).get("current_stage") == "prepare-reference")
     except (ConfigLoadError, JobRunnerError, ValueError, OSError) as exc:
         app.state.update_state(
             state_path,
@@ -600,17 +612,20 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
             error_message=str(exc),
         )
     finally:
-        app.state.active_jobs.discard(job_id)
+        if stop_event is None:
+            app.state.active_jobs.discard(job_id)
 
 
 def execute_job_rerun(*, app: FastAPI, job_id: str, payload: dict) -> None:
     state_path = app.state.job_state_path(job_id)
 
+    stop_event = task_stop_event(app, job_id)
     app.state.active_jobs.add(job_id)
     try:
-        run_job_rerun(app=app, job_id=job_id, payload=payload, state_path=state_path)
+        run_job_rerun(app=app, job_id=job_id, payload=payload, state_path=state_path, stop_event=stop_event)
     finally:
-        app.state.active_jobs.discard(job_id)
+        if stop_event is None:
+            app.state.active_jobs.discard(job_id)
 
 
 def execute_batch_item_rerun(*, app: FastAPI, batch_id: str, item_job_id: str, payload: dict) -> None:
@@ -619,6 +634,7 @@ def execute_batch_item_rerun(*, app: FastAPI, batch_id: str, item_job_id: str, p
     batch_root = build_batch_root(root, batch_id)
     item_rerun_state_path = batch_root / "item-reruns" / item_job_id / "state.json"
 
+    stop_event = task_stop_event(app, batch_id)
     app.state.active_jobs.add(batch_id)
     app.state.active_jobs.add(item_job_id)
     try:
@@ -644,6 +660,7 @@ def execute_batch_item_rerun(*, app: FastAPI, batch_id: str, item_job_id: str, p
             job_id=item_job_id,
             payload=payload,
             state_path=item_rerun_state_path,
+            stop_event=stop_event,
         )
         final_status = str(final_state.get("status") or "")
         if final_status == "success":
@@ -665,29 +682,29 @@ def execute_batch_item_rerun(*, app: FastAPI, batch_id: str, item_job_id: str, p
                 },
             )
             return
-        if final_status == "partial":
+        if final_status in {"partial", "stopped"}:
             update_batch_item_state(
                 app=app,
                 batch_id=batch_id,
                 item_job_id=item_job_id,
                 item_changes={
-                    "status": "partial",
-                    "current_stage": "prepare-reference",
-                    "failed_stage": "prepare-reference",
+                    "status": final_status,
+                    "current_stage": final_state.get("current_stage") or request.start_stage,
+                    "failed_stage": "prepare-reference" if final_status == "partial" else "",
                     "error_message": str(
                         final_state.get("error_message")
-                        or "准备参考 OCR 尚有缺页，请重试缺失页。"
+                        or ("准备参考 OCR 尚有缺页，请重试缺失页。" if final_status == "partial" else "")
                     ),
                     "copied_output_path": "",
                     "ocr_items": list(final_state.get("ocr_items") or []),
                     "pages_total": int(final_state.get("pages_total") or 0),
                     "pages_completed": int(final_state.get("pages_completed") or 0),
                     "pages_failed": int(final_state.get("pages_failed") or 0),
-                    "resumable": True,
+                    "resumable": bool(final_state.get("resumable")),
                 },
                 batch_changes={
-                    "status": "partial",
-                    "current_stage": "prepare-reference",
+                    "status": final_status,
+                    "current_stage": final_state.get("current_stage") or request.start_stage,
                     "error_message": "",
                 },
             )
@@ -728,15 +745,18 @@ def execute_batch_item_rerun(*, app: FastAPI, batch_id: str, item_job_id: str, p
         )
     finally:
         app.state.active_jobs.discard(item_job_id)
-        app.state.active_jobs.discard(batch_id)
+        if stop_event is None:
+            app.state.active_jobs.discard(batch_id)
 
 
 def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
     state_path = app.state.batch_state_path(batch_id)
     root = app.state.project_root
 
+    stop_event = task_stop_event(app, batch_id)
     app.state.active_jobs.add(batch_id)
     try:
+        check_task_stop(stop_event)
         request = BatchJobRequest.model_validate(payload)
         frontend_settings = load_frontend_settings(root)
         effective_profile = first_text(request.profile, frontend_settings.profile)
@@ -831,7 +851,9 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
         with ThreadPoolExecutor(max_workers=effective_remote_concurrency) as executor:
             remote_futures = []
             for runtime in runtimes:
-                if runtime.status in {"failed", "partial"}:
+                if stop_event is not None and stop_event.is_set():
+                    break
+                if runtime.status in {"failed", "partial", "stopped"}:
                     continue
                 runtime_stages = runtime_stage_names(runtime, root)
                 for stage_name in ("extract-audio", "transcribe"):
@@ -845,11 +867,12 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
                         backend_override=effective_backend,
                         stage_callback=lambda _runtime: sync_batch_progress(),
                         gateway_connection=gateway_connection,
+                        **({"stop_event": stop_event} if stop_event is not None else {}),
                     )
-                    if runtime.status in {"failed", "partial"}:
+                    if runtime.status in {"failed", "partial", "stopped"}:
                         break
 
-                if runtime.status in {"failed", "partial"}:
+                if runtime.status in {"failed", "partial", "stopped"}:
                     continue
                 remote_futures.append(
                     executor.submit(
@@ -861,12 +884,18 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
                         progress_callback=batch_reference_progress,
                         stage_callback=lambda _runtime: sync_batch_progress(),
                         gateway_connection=gateway_connection,
+                        **({"stop_event": stop_event} if stop_event is not None else {}),
                     )
                 )
 
             for future in as_completed(remote_futures):
                 future.result()
 
+        stopped = stop_event is not None and stop_event.is_set()
+        if stopped:
+            for runtime in runtimes:
+                if runtime.status == "pending":
+                    runtime.status = "stopped"
         success_count = sum(1 for item in runtimes if item.status == "success")
         failed_count = sum(1 for item in runtimes if item.status == "failed")
         partial_count = sum(1 for item in runtimes if item.status == "partial")
@@ -882,7 +911,7 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
 
         app.state.update_state(
             state_path,
-            status="partial" if partial_count else "success" if failed_count == 0 else "failed",
+            status="stopped" if stopped else "partial" if partial_count else "success" if failed_count == 0 else "failed",
             current_stage="done",
             output_path=str(build_batch_root(root, batch_id) / "summary.json"),
             total=summary.total,
@@ -891,6 +920,8 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
             partial=summary.partial,
             items=[serialize_batch_runtime(item) for item in runtimes],
         )
+    except TaskStopped:
+        mark_task_stopped(app, state_path, resumable=False)
     except (ConfigLoadError, JobRunnerError, ValueError, OSError) as exc:
         app.state.update_state(
             state_path,
@@ -898,15 +929,18 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
             error_message=str(exc),
         )
     finally:
-        app.state.active_jobs.discard(batch_id)
+        if stop_event is None:
+            app.state.active_jobs.discard(batch_id)
 
 
 def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: dict) -> None:
     state_path = app.state.stage_run_state_path(run_id)
     root = app.state.project_root
 
+    stop_event = task_stop_event(app, run_id)
     app.state.active_jobs.add(run_id)
     try:
+        check_task_stop(stop_event)
         request = StageRunRequest.model_validate(payload)
         frontend_settings = load_frontend_settings(root)
         normalized_stage_name = normalize_stage_name(stage_name)
@@ -970,7 +1004,9 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
                 reference_progress if normalized_stage_name == "prepare-reference" else None
             ),
             gateway_connection=gateway_connection,
+            **({"stop_event": stop_event} if stop_event is not None else {}),
         )
+        check_task_stop(stop_event)
         if exit_code == STAGE_EXIT_PARTIAL:
             app.state.update_state(
                 state_path,
@@ -991,6 +1027,8 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
             error_message="",
             resumable=False,
         )
+    except TaskStopped:
+        mark_task_stopped(app, state_path, resumable=read_json_file(state_path).get("current_stage") == "prepare-reference")
     except (ConfigLoadError, JobRunnerError, ValueError, OSError) as exc:
         app.state.update_state(
             state_path,
@@ -998,15 +1036,18 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
             error_message=str(exc),
         )
     finally:
-        app.state.active_jobs.discard(run_id)
+        if stop_event is None:
+            app.state.active_jobs.discard(run_id)
 
 
 def execute_stage_file_run(*, app: FastAPI, run_id: str, stage_name: str, payload: dict) -> None:
     state_path = app.state.stage_run_state_path(run_id)
     root = app.state.project_root
 
+    stop_event = task_stop_event(app, run_id)
     app.state.active_jobs.add(run_id)
     try:
+        check_task_stop(stop_event)
         request = StageFileRunRequest.model_validate(payload)
         if normalize_stage_name(stage_name) == "refine" and request.secondary_asr_candidate:
             raise StageFileRunError("单 TXT 校对文件模式不支持双 ASR；联合校对请使用完整任务或已完成配对的 CLI 工作区")
@@ -1084,7 +1125,9 @@ def execute_stage_file_run(*, app: FastAPI, run_id: str, stage_name: str, payloa
                 reference_progress if normalized_stage_name == "prepare-reference" else None
             ),
             gateway_connection=gateway_connection,
+            **({"stop_event": stop_event} if stop_event is not None else {}),
         )
+        check_task_stop(stop_event)
         if exit_code == STAGE_EXIT_PARTIAL:
             app.state.update_state(
                 state_path,
@@ -1111,6 +1154,8 @@ def execute_stage_file_run(*, app: FastAPI, run_id: str, stage_name: str, payloa
             error_message="",
             resumable=False,
         )
+    except TaskStopped:
+        mark_task_stopped(app, state_path, resumable=read_json_file(state_path).get("current_stage") == "prepare-reference")
     except (ConfigLoadError, JobRunnerError, StageFileRunError, ValueError, OSError) as exc:
         app.state.update_state(
             state_path,
@@ -1118,7 +1163,8 @@ def execute_stage_file_run(*, app: FastAPI, run_id: str, stage_name: str, payloa
             error_message=str(exc),
         )
     finally:
-        app.state.active_jobs.discard(run_id)
+        if stop_event is None:
+            app.state.active_jobs.discard(run_id)
 
 
 def serialize_pdf_book_ocr_items(task_paths: PDFBookOCRTaskPaths, input_path: Path, summary) -> list[dict[str, object]]:
@@ -1132,6 +1178,7 @@ def serialize_pdf_book_ocr_items(task_paths: PDFBookOCRTaskPaths, input_path: Pa
                 "text_length": item.text_length,
                 "warnings": item.warnings,
                 "error": item.error or "",
+                **({"stopped": True} if item.stopped else {}),
                 "page_count": item.page_count,
                 "completed_pages": item.completed_pages,
                 "failed_pages": len(item.failed_page_numbers),
@@ -1173,8 +1220,10 @@ def execute_pdf_book_ocr(*, app: FastAPI, task_id: str, payload: dict) -> None:
     previous_state = read_json_file(state_path)
     is_retry = previous_state.get("current_stage") == "resume"
 
+    stop_event = task_stop_event(app, task_id)
     app.state.active_jobs.add(task_id)
     try:
+        check_task_stop(stop_event)
         request = PDFBookOCRRequest.model_validate(payload)
         frontend_settings = load_frontend_settings(root)
         loaded_settings = load_settings(
@@ -1206,7 +1255,7 @@ def execute_pdf_book_ocr(*, app: FastAPI, task_id: str, payload: dict) -> None:
             error_message="",
         )
 
-        progress_items: dict[str, dict[str, object]] = {}
+        progress_items = {item["source_file"]: item for item in previous_state.get("items", [])}
 
         def book_progress(progress: PDFBookOCRProgress) -> None:
             item = serialize_pdf_book_ocr_progress(input_path, progress)
@@ -1229,13 +1278,21 @@ def execute_pdf_book_ocr(*, app: FastAPI, task_id: str, payload: dict) -> None:
             progress_callback=book_progress,
             **({"retry_plans": retry_plans} if retry_plans else {}),
             gateway_connection=gateway_connection,
+            **({"stop_event": stop_event} if stop_event is not None else {}),
         )
 
         items = serialize_pdf_book_ocr_items(task_paths, input_path, summary)
-        pages_total = sum(item.page_count for item in summary.items)
-        pages_completed = sum(item.completed_pages for item in summary.items)
-        pages_failed = sum(len(item.failed_page_numbers) for item in summary.items)
-        if summary.failure_count == 0:
+        stopped = stop_event is not None and stop_event.is_set()
+        if stopped:
+            progress_items.update({item["source_file"]: item for item in items})
+            items = list(progress_items.values())
+        pages_total = sum(int(item["page_count"]) for item in items)
+        pages_completed = sum(int(item["completed_pages"]) for item in items)
+        pages_failed = sum(int(item["failed_pages"]) for item in items)
+        if stopped:
+            status = "stopped"
+            error_message = ""
+        elif summary.failure_count == 0:
             status = "success"
             error_message = ""
         elif any(item.page_count > 0 for item in summary.items):
@@ -1252,16 +1309,18 @@ def execute_pdf_book_ocr(*, app: FastAPI, task_id: str, payload: dict) -> None:
             status=status,
             current_stage="done",
             output_path=str(task_paths.output_dir),
-            total=len(summary.items),
-            success=summary.success_count,
-            failed=summary.failure_count,
+            total=len(items),
+            success=sum(bool(item["success"]) for item in items),
+            failed=sum(not item["success"] and not item.get("stopped") for item in items),
             pages_total=pages_total,
             pages_completed=pages_completed,
             pages_failed=pages_failed,
-            resumable=any(not item.success for item in summary.items),
+            resumable=stopped or any(not item.success for item in summary.items),
             items=items,
             error_message=error_message,
         )
+    except TaskStopped:
+        mark_task_stopped(app, state_path, resumable=True)
     except (ConfigLoadError, PDFBookOCRError, ValueError, OSError) as exc:
         app.state.update_state(
             state_path,
@@ -1269,4 +1328,5 @@ def execute_pdf_book_ocr(*, app: FastAPI, task_id: str, payload: dict) -> None:
             error_message=str(exc),
         )
     finally:
-        app.state.active_jobs.discard(task_id)
+        if stop_event is None:
+            app.state.active_jobs.discard(task_id)

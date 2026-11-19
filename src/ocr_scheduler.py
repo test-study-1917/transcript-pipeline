@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from threading import Event
 from typing import Callable, Sequence
 
+from src.task_stop import TaskStopped
+
 
 @dataclass(frozen=True)
 class OCRPageTask:
@@ -54,6 +56,7 @@ def run_staggered_page_ocr_tasks(
     errors: dict[int, Exception] = {}
 
     next_task_index = 0
+    skipped = 0
     next_submit_at = monotonic()
     active: dict[Future[str], OCRPageTask] = {}
 
@@ -66,6 +69,8 @@ def run_staggered_page_ocr_tasks(
                     page_text = future.result()
                     if on_succeeded:
                         on_succeeded(task, page_text)
+                except TaskStopped:
+                    skipped += 1
                 except Exception as exc:
                     errors[task.page_number] = exc
                     if on_failed:
@@ -124,7 +129,7 @@ def run_staggered_page_ocr_tasks(
             elif stopped:
                 break
 
-    if len(results) + len(errors) != next_task_index:
+    if len(results) + len(errors) + skipped != next_task_index:
         raise RuntimeError("OCR 页任务结束后仍存在缺失结果")
     return OCRPageTaskRunResult(texts_by_page=results, errors_by_page=errors,
-                                interrupted=next_task_index < len(ordered_tasks))
+                                interrupted=bool(skipped) or next_task_index < len(ordered_tasks))

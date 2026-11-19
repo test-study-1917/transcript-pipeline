@@ -9,6 +9,8 @@ import {
   useDialog,
   useMessage,
 } from "naive-ui";
+import { isTaskActive, taskStatusLabel } from "../api/taskStatus";
+import TaskStopButton from "./TaskStopButton.vue";
 import { getFrontendSettings } from "../api/client";
 import {
   library,
@@ -148,7 +150,7 @@ const currentMaterial = computed(() => {
 });
 
 const hasActiveJobs = computed(() =>
-  jobs.value.some((job) => job.status === "pending" || job.status === "running")
+  jobs.value.some((job) => isTaskActive(job.status))
 );
 
 function pageUrl(pageNumber: number): string {
@@ -473,7 +475,7 @@ function jobStatus(status: string): string {
     failed: "失败",
     interrupted: "已中断",
   };
-  return map[status] ?? status;
+  return map[status] ?? taskStatusLabel(status);
 }
 
 function stopPolling() {
@@ -518,10 +520,10 @@ async function refreshJobs() {
   if (refreshingJobs || !props.show || (!material.value && !jobs.value.length)) return;
   refreshingJobs = true;
   try {
+    const result = await library.jobs();
     if (material.value) {
       await refreshMaterial();
     }
-    const result = await library.jobs();
     if (!props.show) return;
 
     const missing = new Set(
@@ -531,7 +533,7 @@ async function refreshJobs() {
       (item) =>
         item.kind === "ocr" &&
         (trackedJobs.has(item.id) ||
-          (["pending", "running", "partial", "failed", "interrupted"].includes(item.status) &&
+          ((isTaskActive(item.status) || ["partial", "failed", "interrupted", "stopped"].includes(item.status)) &&
             item.pages?.some((number) => missing.has(`${item.book_id}:${number}`))))
     );
   } catch (error) {
@@ -720,6 +722,11 @@ async function startMissing() {
   } finally {
     busy.value = false;
   }
+}
+
+function updateStoppedJob(job: LibraryJob) {
+  jobs.value = jobs.value.map((item) => item.id === job.id ? job : item);
+  void refreshJobs();
 }
 
 function resume(job: LibraryJob) {
@@ -1232,7 +1239,7 @@ onBeforeUnmount(stopPolling);
 
           <div v-if="jobs.length" class="job-list">
             <h4>缺页识别</h4>
-            <p v-if="jobs.some((job) => ['partial', 'failed', 'interrupted'].includes(job.status))" class="muted">
+            <p v-if="jobs.some((job) => ['partial', 'failed', 'interrupted', 'stopped'].includes(job.status))" class="muted">
               继续或重试沿用原任务设置；新识别使用当前设置。
             </p>
             <div v-for="job in jobs" :key="job.id" class="job">
@@ -1244,8 +1251,13 @@ onBeforeUnmount(stopPolling);
               <p v-for="(error, number) in job.errors" :key="number" class="job-error">
                 第 {{ number }} 页：{{ error }}
               </p>
+              <TaskStopButton
+                :status="job.status"
+                :request="() => library.stop(job.id)"
+                @updated="updateStoppedJob"
+              />
               <n-button
-                v-if="['partial', 'failed', 'interrupted'].includes(job.status)"
+                v-if="['partial', 'failed', 'interrupted', 'stopped'].includes(job.status)"
                 size="small"
                 :disabled="busy"
                 @click="resume(job)"

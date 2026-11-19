@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import fcntl
 import math
 import os
 import tempfile
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -12,6 +14,8 @@ from typing import Any
 from src.asr.errors import AsrTranscriptionError
 from src.asr.pairing import file_sha256
 from src.runtime_utils import ensure_directory
+
+publication_guard: ContextVar[Path | None] = ContextVar("asr_publication_guard", default=None)
 
 
 @dataclass(frozen=True)
@@ -78,7 +82,14 @@ def write_asr_result(result: AsrFileResult, output_paths: AsrOutputPaths) -> Non
         payload["metadata"] = result.metadata
     validate_asr_result(result)
     encoded = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")
-    publish_asr_pair(output_paths, encoded, result.full_text.encode("utf-8"))
+    text = result.full_text.encode("utf-8")
+    guard_path = publication_guard.get()
+    if guard_path is None:
+        publish_asr_pair(output_paths, encoded, text)
+        return
+    with guard_path.open("a") as guard:
+        fcntl.flock(guard, fcntl.LOCK_EX)
+        publish_asr_pair(output_paths, encoded, text)
 
 
 def validate_asr_result(result: AsrFileResult) -> None:

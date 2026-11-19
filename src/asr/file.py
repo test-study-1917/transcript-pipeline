@@ -370,7 +370,8 @@ def gpu_asr_lock(device: str, lock_path: Path | None, logger: logging.Logger | N
 
 def transcribe_optional_backend(audio_files: list[Path], output_dir: Path,
                                 options: FileAsrOptions, resources: AsrResources, logger: logging.Logger | None,
-                                lock_fds: tuple[int, ...] = ()) -> list[AsrBatchItem]:
+                                lock_fds: tuple[int, ...] = (), *,
+                                worker_temp_dir: Path | None = None) -> list[AsrBatchItem]:
     from src.asr.registry import get_candidate
     candidate = get_candidate(options.candidate)
     device = options.device.lower()
@@ -423,7 +424,7 @@ def transcribe_optional_backend(audio_files: list[Path], output_dir: Path,
                "cache": str(resources.backend_cache_dir.absolute()),
                "parameters": {"max_new_tokens": options.max_new_tokens, "chunk_seconds": options.chunk_seconds},
                "terms": terms, "warnings": warnings, "audio": inputs}
-    with tempfile.TemporaryDirectory(prefix="asr-worker-", dir=output_dir) as temporary:
+    with tempfile.TemporaryDirectory(prefix="asr-worker-", dir=worker_temp_dir or output_dir) as temporary:
         root = Path(temporary).absolute()
         request_path = root / "request.json"
         response_path = root / "response.json"
@@ -463,11 +464,13 @@ def transcribe_optional_backend(audio_files: list[Path], output_dir: Path,
 
 def transcribe_candidate_batch(audio_files: list[Path], output_dir: Path,
                                options: FileAsrOptions, resources: AsrResources, logger: logging.Logger | None,
-                               lock_fds: tuple[int, ...]) -> list[AsrBatchItem]:
+                               lock_fds: tuple[int, ...], *,
+                               worker_temp_dir: Path | None = None) -> list[AsrBatchItem]:
     """锁由批处理入口持有；候选推理仍复用 registry 和既有 worker。"""
     from src.asr.registry import get_candidate
     if get_candidate(options.candidate).id != "whisper-existing":
-        return transcribe_optional_backend(audio_files, output_dir, options, resources, logger, lock_fds)
+        return transcribe_optional_backend(audio_files, output_dir, options, resources, logger, lock_fds,
+                                           **({"worker_temp_dir": worker_temp_dir} if worker_temp_dir is not None else {}))
     model = load_faster_whisper_model(options, resources)
     try:
         outputs: list[AsrBatchItem] = []
@@ -496,6 +499,7 @@ def transcribe_files(
     options: FileAsrOptions,
     resources: AsrResources,
     logger: logging.Logger | None = None,
+    worker_temp_dir: Path | None = None,
 ) -> list[AsrBatchItem]:
     audio_files = list(audio_paths)
     output_dir = ensure_directory(output_dir)
@@ -514,9 +518,10 @@ def transcribe_files(
         raise AsrTranscriptionError("第二 ASR 候选必须与主候选不同")
     with asr_workspace_lock(output_dir) as workspace_fd, gpu_asr_lock(options.device, resources.gpu_lock_path, logger) as gpu_fd:
         lock_fds = tuple(fd for fd in [workspace_fd, gpu_fd] if fd is not None)
+        worker_options = {"worker_temp_dir": worker_temp_dir} if worker_temp_dir is not None else {}
         if not secondary:
             check_output_candidate(audio_files, output_dir, candidate.id)
-            return transcribe_candidate_batch(audio_files, output_dir, options, resources, logger, lock_fds)
+            return transcribe_candidate_batch(audio_files, output_dir, options, resources, logger, lock_fds, **worker_options)
 
         # 一张 GPU 串行运行，两个候选使用独立工作区；主 TXT 仍兼容原下游。
         secondary_options = replace(options, candidate=secondary, secondary_candidate=None)
@@ -530,11 +535,11 @@ def transcribe_files(
                 check_output_candidate(audio_files, output_dir, candidate.id)
                 check_output_candidate(audio_files, secondary_dir, secondary)
                 primary_outputs = transcribe_candidate_batch(
-                    audio_files, output_dir, options, resources, logger, lock_fds)
+                    audio_files, output_dir, options, resources, logger, lock_fds, **worker_options)
                 if logger:
                     logger.info("双 ASR 第二候选开始 | primary=%s | secondary=%s", candidate.id, secondary)
                 secondary_outputs = transcribe_candidate_batch(
-                    audio_files, secondary_dir, secondary_options, resources, logger, (*lock_fds, secondary_fd))
+                    audio_files, secondary_dir, secondary_options, resources, logger, (*lock_fds, secondary_fd), **worker_options)
                 if len(primary_outputs) != len(secondary_outputs):
                     raise AsrTranscriptionError("双 ASR 输出数量不一致，拒绝宣称成功")
                 for audio in audio_files:

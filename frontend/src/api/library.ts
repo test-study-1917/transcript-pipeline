@@ -222,6 +222,7 @@ export const library = {
   jobs: () =>
     request<Items<LibraryJob>>("/jobs"),
 
+  stop: (id: string) => request<LibraryJob>(`/jobs/${enc(id)}/stop`, { method: "POST" }),
   resume: (id: string) =>
     request<LibraryJob>(`/jobs/${enc(id)}/resume`, json("POST", {})),
 

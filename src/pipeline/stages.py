@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from typing import Callable
+from threading import Event
 
 from src.align_utils import AlignmentError, align_batch, summarize_alignment_results
 from src.asr_utils import AsrTranscriptionError, summarize_transcription_results, transcribe_batch
@@ -15,6 +16,7 @@ from src.reference_utils import (
     prepare_reference_batch,
     summarize_reference_results,
 )
+from src.task_stop import check_task_stop
 
 STAGE_EXIT_SUCCESS = 0
 STAGE_EXIT_FAILED = 1
@@ -78,7 +80,9 @@ def run_stage(
     *,
     gateway_connection=None,
     operations: StageOperations | None = None,
+    stop_event: Event | None = None,
 ) -> int:
+    check_task_stop(stop_event)
     operations = operations or default_stage_operations()
     started_at = time.perf_counter()
 
@@ -94,12 +98,16 @@ def run_stage(
 
     if stage_name == "transcribe":
         try:
-            outputs = operations.transcribe_batch(loaded_settings, logger=logger)
+            outputs = operations.transcribe_batch(
+                loaded_settings, logger=logger,
+                **({"stop_event": stop_event} if stop_event is not None else {}),
+            )
         except AsrTranscriptionError as exc:
             logger.error("%s", exc)
             return 1
 
-        log_stage_completion(logger, stage_name, operations.summarize_transcription_results(outputs), started_at)
+        summary = "转写进程完成" if outputs is None else operations.summarize_transcription_results(outputs)
+        log_stage_completion(logger, stage_name, summary, started_at)
         return 0
 
     if stage_name == "prepare-reference":
@@ -108,6 +116,7 @@ def run_stage(
                 loaded_settings,
                 logger=logger,
                 progress_callback=prepare_reference_progress_callback,
+                **({"stop_event": stop_event} if stop_event is not None else {}),
                 **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
             )
         except ReferencePreparationError as exc:

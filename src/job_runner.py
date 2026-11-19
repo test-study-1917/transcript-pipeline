@@ -17,6 +17,9 @@ from urllib.request import Request, urlopen
 
 import yaml
 
+from threading import Event
+
+from src.task_stop import TaskStopped, check_task_stop
 from src.pipeline import STAGE_EXIT_PARTIAL, run_stage
 from src.config_loader import ConfigLoadError, load_settings
 from src.ffmpeg_utils import supported_media_extensions
@@ -1046,8 +1049,9 @@ def execute_batch_stage_for_runtime(
     progress_callback: Callable[[BatchJobRuntime, ReferenceFileProgress], None] | None = None,
     stage_callback: Callable[[BatchJobRuntime], None] | None = None,
     gateway_connection=None,
+    stop_event: Event | None = None,
 ) -> None:
-    if runtime.status in {"failed", "partial"}:
+    if runtime.status in {"failed", "partial", "stopped"}:
         return
 
     runtime.status = "running"
@@ -1056,6 +1060,7 @@ def execute_batch_stage_for_runtime(
         stage_callback(runtime)
 
     try:
+        check_task_stop(stop_event)
         job_loaded_settings = load_settings(
             settings_path=runtime.job_root / "settings.generated.yaml",
             project_root=project_root,
@@ -1072,8 +1077,10 @@ def execute_batch_stage_for_runtime(
             logger,
             backend_override=current_backend_override,
             prepare_reference_progress_callback=reference_progress_callback,
+            **({"stop_event": stop_event} if stop_event is not None else {}),
             **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
         )
+        check_task_stop(stop_event)
         if exit_code == STAGE_EXIT_PARTIAL:
             runtime.status = "partial"
             runtime.failed_stage = stage_name
@@ -1104,6 +1111,8 @@ def execute_batch_stage_for_runtime(
             )
             runtime.status = "success"
             runtime.current_stage = "done"
+    except TaskStopped:
+        runtime.status = "stopped"
     except (ConfigLoadError, JobRunnerError) as exc:
         runtime.status = "failed"
         runtime.failed_stage = stage_name
@@ -1155,6 +1164,7 @@ def execute_remote_pipeline_for_runtime(
     progress_callback: Callable[[BatchJobRuntime, ReferenceFileProgress], None] | None = None,
     stage_callback: Callable[[BatchJobRuntime], None] | None = None,
     gateway_connection=None,
+    stop_event: Event | None = None,
 ) -> None:
     for stage_name in remote_pipeline_stages_for_runtime(runtime, project_root):
         execute_batch_stage_for_runtime(
@@ -1165,9 +1175,10 @@ def execute_remote_pipeline_for_runtime(
             backend_override=backend_override,
             progress_callback=progress_callback,
             stage_callback=stage_callback,
+            **({"stop_event": stop_event} if stop_event is not None else {}),
             **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
         )
-        if runtime.status in {"failed", "partial"}:
+        if runtime.status in {"failed", "partial", "stopped"}:
             return
 
 
@@ -1236,7 +1247,9 @@ def serialize_batch_runtime(runtime: BatchJobRuntime) -> dict[str, Any]:
         "pages_total": sum(int(item.get("page_count") or 0) for item in runtime.ocr_items.values()),
         "pages_completed": sum(int(item.get("completed_pages") or 0) for item in runtime.ocr_items.values()),
         "pages_failed": sum(len(item.get("failed_page_numbers") or []) for item in runtime.ocr_items.values()),
-        "resumable": runtime.status == "partial",
+        "resumable": runtime.status == "partial" or (
+            runtime.status == "stopped" and runtime.current_stage == "prepare-reference"
+        ),
     }
 
 

@@ -25,11 +25,15 @@ import {
   rerunBatchItem,
   rerunJob,
   retryStageRun,
+  stopJobTask,
   type BatchItemState,
   type JobInputSummary,
+  type JobState,
   type OCRProgressItem,
   type ResultDownloadFormat,
 } from "../api/client";
+import { isTaskActive, taskStatusLabel } from "../api/taskStatus";
+import TaskStopButton from "./TaskStopButton.vue";
 import JobArtifactsViewer from "./JobArtifactsViewer.vue";
 
 interface IdentityEntry {
@@ -46,6 +50,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "deleted"): void;
+  (e: "updated", state: JobState): void;
   (e: "rerun", jobId: string): void;
 }>();
 
@@ -90,18 +95,16 @@ watch(
   },
 );
 
-const canDelete = computed(() => {
-  return status.value !== "running" && status.value !== "pending";
-});
+const canDelete = computed(() => !isTaskActive(status.value));
 
 const canRerun = computed(() => {
-  return kind.value === "job" && status.value !== "running" && status.value !== "pending";
+  return kind.value === "job" && !isTaskActive(status.value);
 });
 const canRetryStageRun = computed(() => {
   return (
     kind.value === "stage-run"
     && String(props.state.current_stage ?? "") === "prepare-reference"
-    && (status.value === "partial" || status.value === "failed")
+    && ["partial", "failed", "stopped"].includes(status.value)
   );
 });
 
@@ -456,7 +459,7 @@ const statusType = computed<"success" | "error" | "info" | "warning">(() => {
   if (status.value === "failed") {
     return "error";
   }
-  if (status.value === "running") {
+  if (status.value === "running" || status.value === "stopping") {
     return "info";
   }
   return "warning";
@@ -497,11 +500,11 @@ function batchItemKey(item: BatchItemState) {
 }
 
 function defaultBatchItemRerunStage(item: BatchItemState) {
-  const failedStage = textValue(item.failed_stage);
+  const failedStage = textValue(item.failed_stage || item.current_stage);
   if (rerunStageKeys.value.has(failedStage)) {
     return failedStage;
   }
-  return "refine";
+  return item.status === "stopped" ? "extract-audio" : "refine";
 }
 
 function batchItemRerunStageValue(item: BatchItemState) {
@@ -524,10 +527,9 @@ function canRerunBatchItem(item: BatchItemState) {
   const itemStatus = textValue(item.status);
   return (
     kind.value === "batch" &&
-    status.value !== "running" &&
-    status.value !== "pending" &&
+    !isTaskActive(status.value) &&
     Boolean(batchItemKey(item)) &&
-    (itemStatus === "success" || itemStatus === "partial" || itemStatus === "failed")
+    ["success", "partial", "failed", "stopped"].includes(itemStatus)
   );
 }
 
@@ -628,7 +630,7 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
     return "pending";
   }
   
-  if (status.value === "running") {
+  if (status.value === "running" || status.value === "stopping") {
     if (currentStage === stageKey) {
       return "active";
     }
@@ -636,6 +638,9 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
       return stageIndex < currentStageIndex ? "completed" : "pending";
     }
     return stageIndex === 0 ? "active" : "pending";
+  }
+  if (status.value === "stopped") {
+    return currentStageIndex !== -1 && stageIndex < currentStageIndex ? "completed" : "pending";
   }
   if (status.value === "partial") {
     if (currentStage === stageKey) {
@@ -664,8 +669,14 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
           }"
         ></span>
         <n-tag :type="statusType" round size="medium" :bordered="false" class="status-badge">
-          {{ String(state.status ?? "-") }}
+          {{ taskStatusLabel(status) || "-" }}
         </n-tag>
+        <TaskStopButton
+          :key="stateId"
+          :status="status"
+          :request="() => stopJobTask(kind, stateId)"
+          @updated="(next) => emit('updated', next)"
+        />
         <n-dropdown
           v-if="canDownloadSingleResult"
           trigger="click"
@@ -901,7 +912,7 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
                   </div>
                   <n-flex align="center" :size="8" wrap class="batch-item-actions">
                     <n-tag size="small" :type="itemStatusType(item.status)" :bordered="false">
-                      {{ item.status || "-" }}
+                      {{ taskStatusLabel(String(item.status || "-")) }}
                     </n-tag>
                     <n-dropdown
                       trigger="click"

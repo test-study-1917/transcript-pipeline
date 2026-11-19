@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from threading import Event
 from typing import Callable
 
 from src.reference_utils import (
@@ -37,6 +38,7 @@ class PDFBookOCRItem:
     page_errors: dict[int, str] = field(default_factory=dict)
     fallback_page_models: dict[int, str] = field(default_factory=dict)
     ocr_identity: str = ""
+    stopped: bool = False
 
 
 @dataclass(frozen=True)
@@ -134,6 +136,7 @@ def ocr_pdf_book(
     progress_callback: Callable[[PDFBookOCRProgress], None] | None = None,
     retry_plan: PDFOCRRetryPlan | None = None,
     gateway_connection=None,
+    stop_event: Event | None = None,
 ) -> PDFBookOCRItem:
     """识别单本 PDF；只有整本各页都成功时才写出该书 TXT。"""
     resolved_source_pdf = source_pdf.expanduser().resolve()
@@ -166,6 +169,7 @@ def ocr_pdf_book(
             progress_callback=page_progress,
             prompt_builder=build_pdf_book_ocr_image_prompt,
             **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
+            **({"stop_event": stop_event} if stop_event is not None else {}),
             **({"retry_plan": retry_plan} if retry_plan is not None else {}),
         )
     except CodexOCRPagesIncompleteError as exc:
@@ -190,10 +194,12 @@ def ocr_pdf_book(
             text_length=0,
             warnings=[],
             error=str(exc),
+            stopped=last_progress is not None and last_progress.status == "interrupted",
             page_count=last_progress.page_count if last_progress else 0,
             completed_pages=len(last_progress.completed_page_numbers) if last_progress else 0,
             failed_page_numbers=tuple(last_progress.page_errors) if last_progress else (),
             page_errors=last_progress.page_errors if last_progress else {},
+            fallback_page_models=last_progress.fallback_page_models if last_progress else {},
         )
 
     return PDFBookOCRItem(
@@ -217,11 +223,14 @@ def ocr_pdf_book_batch(
     progress_callback: Callable[[PDFBookOCRProgress], None] | None = None,
     retry_plans: dict[str, PDFOCRRetryPlan] | None = None,
     gateway_connection=None,
+    stop_event: Event | None = None,
 ) -> PDFBookOCRSummary:
     """批量识别 PDF 书籍；一本失败不会阻止其余书籍继续处理。"""
     source_pdfs = iter_pdf_book_files(input_path)
     items: list[PDFBookOCRItem] = []
     for source_pdf in source_pdfs:
+        if stop_event is not None and stop_event.is_set():
+            break
         identity = (
             build_pdf_ocr_run_identity(source_pdf, loaded_settings)
             if checkpoint_root is not None or retry_plans else None
@@ -247,6 +256,7 @@ def ocr_pdf_book_batch(
             checkpoint_dir=checkpoint_dir,
             progress_callback=report_book_progress if progress_callback else None,
             **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
+            **({"stop_event": stop_event} if stop_event is not None else {}),
             **({"retry_plan": plan} if plan is not None else {}),
         )
         items.append(replace(item, ocr_identity=identity.fingerprint) if identity else item)

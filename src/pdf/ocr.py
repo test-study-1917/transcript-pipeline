@@ -20,6 +20,7 @@ from src.ocr_scheduler import OCRPageTask, run_staggered_page_ocr_tasks
 from src.pdf.errors import CodexOCRError, CodexOCRPagesIncompleteError, PdfDependencyError, ReferencePreparationError
 from src.pdf.workflow import PDFOCRPageModel, PDFOCRPageState, PDFOCRRetryPlan, build_pdf_ocr_run_identity, select_pdf_ocr_page_model
 from src.runtime_utils import ensure_directory
+from src.task_stop import check_task_stop
 
 LOGGER = logging.getLogger(__name__)
 
@@ -305,7 +306,7 @@ class PDFOCROptions:
 
 @dataclass(frozen=True)
 class PDFOCRResult:
-    status: Literal["success", "partial", "failed"]
+    status: Literal["success", "partial", "failed", "interrupted"]
     source_pdf: Path
     output_text_path: Path
     state: PDFOCRPageState
@@ -435,6 +436,7 @@ def _run_pdf_pages(
     report()
 
     def recognize(task: OCRPageTask) -> str:
+        check_task_stop(stop_event)
         effective = select_pdf_ocr_page_model(primary, task.page_number, retry_plan)
         payload: dict[str, object] = {
             "model": effective.model,
@@ -448,6 +450,7 @@ def _run_pdf_pages(
             payload["reasoning"] = {"effort": effective.reasoning_effort}
         if effective.fast_mode:
             payload["service_tier"] = "priority"
+        check_task_stop(stop_event)
         return sanitize_gemini_ocr_text(strip_fenced_text(gateway.responses_stream_text(payload)))
 
     def succeeded(task: OCRPageTask, text: str) -> None:
@@ -524,6 +527,7 @@ def ocr_pdf(
     progress_callback: Callable[[PDFOCRPageState], None] | None = None,
     prompt_builder: Callable[[str | Path, int, int], str] = build_codex_api_image_ocr_prompt,
     retry_plan: PDFOCRRetryPlan | None = None,
+    stop_event: Event | None = None,
     _runtime: PDFOCRRuntime | None = None,
 ) -> PDFOCRResult:
     """识别单 PDF；只有全部页面完成且 TXT 原子发布后才返回 success。
@@ -542,8 +546,12 @@ def ocr_pdf(
         _run_pdf_pages(source_pdf, None, options, gateway=gateway,
                        checkpoint_dir=checkpoint_dir, progress_callback=progress_callback,
                        page_callback=None, prompt_builder=prompt_builder, retry_plan=retry_plan,
-                       stop_event=None, runtime=_runtime or PDFOCRRuntime(), result=pages,
+                       stop_event=stop_event, runtime=_runtime or PDFOCRRuntime(), result=pages,
                        collect_sources=False)
+        if pages.interrupted:
+            report("interrupted")
+            return PDFOCRResult("interrupted", source_pdf, output_text_path, pages.state("interrupted"),
+                                error=CodexOCRError("OCR 已停止"))
         completed, errors, fallback_models, page_count = (
             pages.texts_by_page, pages.errors_by_page, pages.fallback_page_models, pages.page_count,
         )

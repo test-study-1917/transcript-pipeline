@@ -14,6 +14,8 @@ import {
 import FileDropZone from "../components/FileDropZone.vue";
 import LibraryBookDetail from "../components/LibraryBookDetail.vue";
 import LibraryMaterialComposer from "../components/LibraryMaterialComposer.vue";
+import { isTaskActive, taskStatusLabel } from "../api/taskStatus";
+import TaskStopButton from "../components/TaskStopButton.vue";
 import { getFrontendSettings, type FrontendSettings } from "../api/client";
 import {
   library,
@@ -125,7 +127,7 @@ function jobStatus(status: string): string {
     failed: "失败",
     interrupted: "已中断",
   };
-  return map[status] ?? status;
+  return map[status] ?? taskStatusLabel(status);
 }
 
 function rememberBook(value: LibraryBook) {
@@ -193,7 +195,7 @@ const repeatedPages = computed(() => {
 
 const activeJobs = computed(() =>
   jobs.value.filter((item) =>
-    ["pending", "running", "partial", "failed", "interrupted"].includes(item.status)
+    (isTaskActive(item.status) || ["partial", "failed", "interrupted", "stopped"].includes(item.status))
   )
 );
 
@@ -252,9 +254,9 @@ async function loadMaterials() {
 
 async function refreshJobs() {
   try {
-    const oldActive = jobs.value.some((item) => item.status === "running" || item.status === "pending");
+    const oldActive = jobs.value.some((item) => isTaskActive(item.status));
     jobs.value = (await library.jobs()).items;
-    const newActive = jobs.value.some((item) => item.status === "running" || item.status === "pending");
+    const newActive = jobs.value.some((item) => isTaskActive(item.status));
 
     if (oldActive && !newActive) {
       await loadBooks();
@@ -747,14 +749,20 @@ onBeforeUnmount(() => {
         <span>
           {{ jobLabel(job) }} · {{ jobStatus(job.status) }} · {{ job.completed }}/{{ job.total }}<span v-if="job.kind === 'ocr'"> 页</span><span v-if="job.failed_pages"> · 失败 {{ job.failed_pages }} 页</span>
         </span>
+        <TaskStopButton
+          v-if="job.kind === 'ocr'"
+          :status="job.status"
+          :request="() => library.stop(job.id)"
+          @updated="refreshJobs"
+        />
         <n-button
-          v-if="job.kind === 'ocr' && ['partial', 'failed', 'interrupted'].includes(job.status)"
+          v-if="job.kind === 'ocr' && ['partial', 'failed', 'interrupted', 'stopped'].includes(job.status)"
           size="small"
           @click="resume(job)"
         >
           继续 / 重试
         </n-button>
-        <p v-if="job.kind !== 'ocr' && ['partial', 'failed', 'interrupted'].includes(job.status)">
+        <p v-if="job.kind !== 'ocr' && ['partial', 'failed', 'interrupted', 'stopped'].includes(job.status)">
           {{ job.kind === 'import' ? '请回到历史导入重新选择来源。' : '请回到材料重新生成版本。' }}
         </p>
         <p v-if="job.error" class="error-text">{{ job.error }}</p>

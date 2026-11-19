@@ -16,6 +16,7 @@ class JobsMixin:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='library-ocr')
         self._worker_running = False
         self._gateways = {}
+        self._running_stop = None
 
     def recover(self):
         with self._lock:
@@ -23,6 +24,7 @@ class JobsMixin:
                 self._init_queue()
         with self._lock, self._db(write=True) as db:
             db.execute("UPDATE ocr_jobs SET status='interrupted',updated_at=?,error='服务已重启，请手动继续。' WHERE status IN ('pending','running')", (now(),))
+            db.execute("UPDATE ocr_jobs SET status='stopped',updated_at=? WHERE status='stopping'", (now(),))
             db.execute("UPDATE pages SET ocr_status='missing' WHERE current_revision_id IS NULL AND ocr_status IN ('queued','running')")
             db.execute("UPDATE material_revisions SET status='failed',error='生成中断，请重新生成。' WHERE status='building'")
             db.execute("UPDATE operations SET status='interrupted',error='服务已重启，请重新操作。',updated_at=? WHERE status IN ('pending','running')", (now(),))
@@ -38,7 +40,7 @@ class JobsMixin:
                     with self._db(write=True) as db:
                         db.execute(f"UPDATE {table} SET cleanup_error=?,updated_at=? WHERE id=? AND state='deleting'", (exc.detail, now(), identifier))
         with self._db() as db:
-            interrupted = [dict(row) for row in db.execute("SELECT * FROM ocr_jobs WHERE status='interrupted'")]
+            interrupted = [dict(row) for row in db.execute("SELECT * FROM ocr_jobs WHERE status IN ('interrupted','stopped')")]
         # A checkpoint can reach disk just before the page revision transaction.
         # Recover these successful pages before any new job computes its missing set.
         for job in interrupted:
@@ -49,7 +51,10 @@ class JobsMixin:
                     db.execute("UPDATE ocr_jobs SET error=? WHERE id=?", (f"检查点读取失败：{exc}", job['id']))
 
     def close(self):
-        self._stop.set()
+        with self._lock:
+            self._stop.set()
+            if self._running_stop is not None:
+                self._running_stop.set()
         self._executor.shutdown(wait=True, cancel_futures=False)
         if not self._schema_ready:
             return
@@ -155,7 +160,7 @@ class JobsMixin:
                 if db.execute("SELECT 1 FROM operations WHERE id=?",(job_id,)).fetchone():
                     raise LibraryError(409,"导入或材料生成需重新操作，不能继续该作业。")
                 raise LibraryError(404,"OCR 作业不存在。")
-            if row['status'] not in {'interrupted','failed','partial'}:
+            if row['status'] not in {'interrupted','failed','partial','stopped'}:
                 raise LibraryError(409,"当前 OCR 作业不能继续。")
             book = self._book_row(db,row['book_id'])
             if book['archived'] or self._stop.is_set():
@@ -174,6 +179,23 @@ class JobsMixin:
         self._schedule()
         return result
 
+    def stop_job(self, job_id):
+        with self._lock, self._db(write=True) as db:
+            row = db.execute("SELECT * FROM ocr_jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise LibraryError(404,"OCR 作业不存在。")
+            if row['status'] in {'stopping', 'stopped'}:
+                return self._job_dict(db,row)
+            if row['status'] not in {'pending', 'running'}:
+                raise LibraryError(409,"OCR 作业已结束，不能停止。")
+            status = 'stopped' if row['status'] == 'pending' else 'stopping'
+            if status == 'stopped':
+                self._gateways.pop(job_id, None)
+            if status == 'stopping':
+                self._running_stop.set()
+            db.execute("UPDATE ocr_jobs SET status=?,updated_at=?,error='' WHERE id=?", (status,now(),job_id))
+            return self._job_dict(db,db.execute("SELECT * FROM ocr_jobs WHERE id=?", (job_id,)).fetchone())
+
     def _schedule(self):
         with self._lock:
             if not self._worker_running and not self._stop.is_set():
@@ -190,16 +212,24 @@ class JobsMixin:
                         self._worker_running = False
                         released = True
                         return
+                    if self._stop.is_set():
+                        return
+                    stop_event = threading.Event()
+                    self._running_stop = stop_event
+                    gateway = self._gateways.pop(job['id'], None)
                     db.execute("UPDATE ocr_jobs SET status='running',updated_at=? WHERE id=? AND status='pending'", (now(),job['id']))
                 try:
-                    self._run_job(dict(job))
+                    self._run_job(dict(job), gateway, stop_event)
                 except Exception as exc:
                     with self._lock, self._db(write=True) as db:
-                        status = 'interrupted' if self._stop.is_set() else 'failed'
-                        db.execute("UPDATE ocr_jobs SET status=?,error=?,updated_at=? WHERE id=?", (status,str(exc),now(),job['id']))
+                        if stop_event.is_set():
+                            self._finish_interrupted(db, job)
+                            continue
+                        db.execute("UPDATE ocr_jobs SET status='failed',error=?,updated_at=? WHERE id=?", (str(exc),now(),job['id']))
                         db.execute("UPDATE pages SET ocr_status='failed',error=? WHERE book_id=? AND ocr_status='running' AND current_revision_id IS NULL", (str(exc),job['book_id']))
                 finally:
-                    self._gateways.pop(job['id'],None)
+                    with self._lock:
+                        self._running_stop = None
         finally:
             if not released:
                 with self._lock:
@@ -242,7 +272,7 @@ class JobsMixin:
         if invalid:
             raise ValueError('；'.join(invalid))
 
-    def _run_job(self, job):
+    def _run_job(self, job, gateway, stop_event):
         # Imported lazily: the shared PDF capability is also used by the old tools.
         from src.pdf.ocr import PDFOCROptions, build_pdf_book_ocr_image_prompt, ocr_pdf_pages
         options, pages = json.loads(job['options']), json.loads(job['pages'])
@@ -252,16 +282,14 @@ class JobsMixin:
         self._ingest_saved(job)
         with self._lock, self._db(write=True) as db:
             missing = [p for p in pages if self._page_row(db,job['book_id'],p)['current_revision_id'] is None]
+            if stop_event.is_set():
+                self._finish_interrupted(db, job)
+                return
+            if not missing:
+                db.execute("UPDATE ocr_jobs SET status='success',errors='{}',error='',updated_at=? WHERE id=?",(now(),job['id']))
+                return
             for p in missing:
                 db.execute("UPDATE pages SET ocr_status='running',error='' WHERE book_id=? AND page=?", (job['book_id'],p))
-        if self._stop.is_set():
-            self._finish_interrupted(job['id'])
-            return
-        if not missing:
-            with self._db(write=True) as db:
-                db.execute("UPDATE ocr_jobs SET status='success',errors='{}',error='',updated_at=? WHERE id=?",(now(),job['id']))
-            return
-        gateway = self._gateways.get(job['id'])
         if gateway is None and self.gateway_factory is not None:
             gateway = self.gateway_factory(options)
         if gateway is None:
@@ -271,16 +299,24 @@ class JobsMixin:
         result = ocr_pdf_pages(source,missing,pdf_options,gateway=gateway,checkpoint_dir=checkpoint,
                                page_callback=lambda page,text,meta:self._record_ocr_page(job,page,text,meta),
                                prompt_builder=build_pdf_book_ocr_image_prompt,
-                               retry_plan=plan,stop_event=self._stop)
+                               retry_plan=plan,stop_event=stop_event)
         with self._lock, self._db(write=True) as db:
             errors = {str(page):str(error) for page,error in result.errors_by_page.items()}
             for page,error in result.errors_by_page.items():
                 db.execute("UPDATE pages SET ocr_status='failed',error=? WHERE book_id=? AND page=? AND current_revision_id IS NULL", (str(error),job['book_id'],page))
+            if stop_event.is_set():
+                self._finish_interrupted(db, job, errors)
+                return
             db.execute("UPDATE pages SET ocr_status='missing' WHERE book_id=? AND current_revision_id IS NULL AND ocr_status='running'",(job['book_id'],))
             remaining = sum(self._page_row(db,job['book_id'],p)['current_revision_id'] is None for p in pages)
-            status = 'interrupted' if result.interrupted or self._stop.is_set() else ('partial' if remaining else 'success')
-            db.execute("UPDATE ocr_jobs SET status=?,errors=?,error=?,updated_at=? WHERE id=?", (status,json_text(errors),'服务已停止，请手动继续。' if status=='interrupted' else '',now(),job['id']))
+            status = 'partial' if remaining else 'success'
+            db.execute("UPDATE ocr_jobs SET status=?,errors=?,error='',updated_at=? WHERE id=?", (status,json_text(errors),now(),job['id']))
 
-    def _finish_interrupted(self, job_id):
-        with self._db(write=True) as db:
-            db.execute("UPDATE ocr_jobs SET status='interrupted',error='服务已停止，请手动继续。',updated_at=? WHERE id=?",(now(),job_id))
+    def _finish_interrupted(self, db, job, errors=None):
+        db.execute("UPDATE pages SET ocr_status='missing' WHERE book_id=? AND current_revision_id IS NULL AND ocr_status='running'",(job['book_id'],))
+        db.execute(
+            "UPDATE ocr_jobs SET status=CASE WHEN status='stopping' THEN 'stopped' ELSE 'interrupted' END,"
+            "error=CASE WHEN status='stopping' THEN '' ELSE '服务已停止，请手动继续。' END,"
+            "errors=COALESCE(?,errors),updated_at=? WHERE id=?",
+            (json_text(errors) if errors is not None else None,now(),job['id']),
+        )

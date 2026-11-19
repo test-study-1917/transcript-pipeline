@@ -19,7 +19,9 @@ import {
 } from "naive-ui";
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 
-import { getBatch, getRefineDefaultInstruction, listFs, submitBatchJob, type FileItem, type JobState } from "../api/client";
+import { isTaskActive, taskStatusLabel } from "../api/taskStatus";
+import TaskStopButton from "../components/TaskStopButton.vue";
+import { getBatch, stopJobTask, getRefineDefaultInstruction, listFs, submitBatchJob, type FileItem, type JobState } from "../api/client";
 import FastModeSwitch from "../components/FastModeSwitch.vue";
 import ProfileSelector from "../components/ProfileSelector.vue";
 import AsrCandidateSelector from "../components/AsrCandidateSelector.vue";
@@ -257,7 +259,7 @@ function stopPolling() {
 async function refreshBatch(batchId: string) {
   const state = await getBatch(batchId);
   batchState.value = state;
-  if (state.status === "success" || state.status === "partial" || state.status === "failed") {
+  if (!isTaskActive(state.status)) {
     stopPolling();
   }
 }
@@ -765,8 +767,14 @@ onBeforeUnmount(stopPolling);
           <div class="summary-top">
             <strong class="batch-id-text">{{ batchState.id }}</strong>
             <n-tag :type="statusType" round :bordered="false" class="summary-status-badge">
-              {{ batchState.status }}
+              {{ taskStatusLabel(batchState.status) }}
             </n-tag>
+            <TaskStopButton
+              :key="batchState.id"
+              :status="batchState.status"
+              :request="() => stopJobTask('batch', batchState!.id)"
+              @updated="(next) => { if (batchState?.id === next.id) batchState = next; }"
+            />
           </div>
           
           <div class="summary-counters">
@@ -811,7 +819,7 @@ onBeforeUnmount(stopPolling);
                   <strong class="sub-id">{{ String(item.job_id || `未分配ID`) }}</strong>
                 </div>
                 <n-tag :type="itemStatusType(item)" size="small" :bordered="false" round class="sub-badge">
-                  {{ String(item.status ?? "-") }}
+                  {{ taskStatusLabel(String(item.status ?? "-")) }}
                 </n-tag>
               </div>
               <div class="batch-item-grid-modern">

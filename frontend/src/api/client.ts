@@ -335,6 +335,7 @@ export interface PDFBookOCRItem {
   source_file: string;
   output_file: string;
   success: boolean;
+  stopped?: boolean;
   text_length: number;
   warnings: string[];
   error: string;
@@ -351,7 +352,7 @@ export interface PDFBookOCRItem {
 export interface PDFBookOCRTask {
   id: string;
   kind: "pdf-ocr";
-  status: "pending" | "running" | "success" | "partial" | "failed";
+  status: "pending" | "running" | "success" | "partial" | "failed" | "stopping" | "stopped";
   created_at: string;
   updated_at: string;
   current_stage: string;
@@ -492,6 +493,10 @@ export function submitPDFBookOCR(payload: PDFBookOCRPayload): Promise<{ task_id:
 
 export function getPDFBookOCRTask(taskId: string): Promise<PDFBookOCRTask> {
   return requestJson<PDFBookOCRTask>(`/api/pdf-book-ocr/${encodeURIComponent(taskId)}`);
+}
+
+export function stopPDFBookOCR(taskId: string): Promise<PDFBookOCRTask> {
+  return requestJson<PDFBookOCRTask>(`/api/pdf-book-ocr/${encodeURIComponent(taskId)}/stop`, { method: "POST" });
 }
 
 export function retryPDFBookOCR(taskId: string): Promise<{ task_id: string }> {
@@ -654,6 +659,11 @@ export function retryStageRun(runId: string): Promise<{ run_id: string }> {
 
 export function listStageRuns(): Promise<JobListResponse> {
   return requestJson<JobListResponse>("/api/stage-runs");
+}
+
+export function stopJobTask(kind: string, id: string): Promise<JobState> {
+  const collection = kind === "batch" ? "batches" : kind === "stage-run" ? "stage-runs" : "jobs";
+  return requestJson<JobState>(`/api/${collection}/${encodeURIComponent(id)}/stop`, { method: "POST" });
 }
 
 export function deleteJob(jobId: string): Promise<{ success: boolean }> {

@@ -62,8 +62,8 @@ from src.web.tasks import (
     execute_single_job,
     execute_stage_file_run,
     execute_stage_run,
-    submit_task,
 )
+from src.web.task_control import request_task_stop, submit_task, task_stop_event
 from src.web.uploads import (
     UploadKind,
     build_upload_destination,
@@ -203,6 +203,8 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         try:
             yield
         finally:
+            for control in list(app.state.task_controls.values()):
+                control.stop.set()
             await run_in_threadpool(app.state.library.close)
             await app.state.dictation.close()
             app.state.executor.shutdown(wait=False, cancel_futures=True)
@@ -227,6 +229,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
     
     # Active jobs in-memory tracker
     app.state.active_jobs = set()
+    app.state.task_controls = {}
     from src.web.library import install_library
     from src.library import LibraryError
     install_library(app, root)
@@ -237,7 +240,20 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         if state.get("status") in ("running", "pending"):
             job_id = state.get("id")
             kind = state.get("kind", "job")
+            stop_event = task_stop_event(app, job_id)
+            if stop_event is not None and stop_event.is_set():
+                return enrich_state_input_summary(root, {**state, "status": "stopping"})
             if job_id not in app.state.active_jobs:
+                path_for_kind = {
+                    "job": app.state.job_state_path,
+                    "batch": app.state.batch_state_path,
+                    "stage-run": app.state.stage_run_state_path,
+                }
+                path = path_for_kind[kind](job_id)
+                # The worker may have written its final state after our first read.
+                state = read_json_file(path)
+                if state.get("status") not in {"running", "pending"}:
+                    return enrich_state_input_summary(root, state)
                 raw_current_stage = str(state.get("current_stage") or "").strip()
                 try:
                     current_stage = normalize_stage_name(raw_current_stage) if raw_current_stage else ""
@@ -254,10 +270,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
                 state["error_message"] = error_message
                 if is_resumable_reference_ocr:
                     state["resumable"] = True
-                if kind == "job":
-                    path = app.state.job_state_path(job_id)
-                elif kind == "batch":
-                    path = app.state.batch_state_path(job_id)
+                if kind == "batch":
                     updated_items: list[Any] = []
                     for raw_item in state.get("items") or []:
                         if not isinstance(raw_item, dict):
@@ -275,8 +288,6 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
                             )
                         updated_items.append(item)
                     state["items"] = updated_items
-                else:  # stage-run
-                    path = app.state.stage_run_state_path(job_id)
                 changes: dict[str, Any] = {
                     "status": next_status,
                     "error_message": error_message,
@@ -288,9 +299,15 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         return enrich_state_input_summary(root, state)
 
     def reconcile_pdf_book_ocr_state(task_id: str, state: dict) -> dict:
-        if state.get("status") not in {"running", "pending"} or task_id in app.state.active_jobs:
+        if state.get("status") not in {"running", "pending"}:
             return state
+        if task_id in app.state.active_jobs:
+            stop_event = task_stop_event(app, task_id)
+            return {**state, "status": "stopping"} if stop_event is not None and stop_event.is_set() else state
         task_paths = build_pdf_book_ocr_task_paths(root, task_id)
+        state = read_json_file(task_paths.state_path)
+        if state.get("status") not in {"running", "pending"}:
+            return state
         return app.state.update_state(
             task_paths.state_path,
             status="partial",
@@ -409,6 +426,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         app.state.active_jobs.add(task_id)
         submit_task(
             app,
+            task_paths.state_path,
             app.state.execute_pdf_book_ocr,
             app=app,
             task_id=task_id,
@@ -469,6 +487,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             )
             submit_task(
                 app,
+                task_paths.state_path,
                 app.state.execute_pdf_book_ocr,
                 app=app,
                 task_id=task_id,
@@ -481,6 +500,14 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             if not submitted:
                 app.state.active_jobs.discard(task_id)
         return {"task_id": task_id}
+
+    @app.post("/api/pdf-book-ocr/{task_id}/stop", status_code=202)
+    async def stop_pdf_book_ocr(task_id: str) -> dict:
+        try:
+            task_paths = build_pdf_book_ocr_task_paths(root, task_id)
+        except PDFBookOCRTaskError as exc:
+            raise HTTPException(status_code=404, detail="PDF OCR 任务不存在。") from exc
+        return request_task_stop(app, task_paths.state_path)
 
     @app.delete("/api/pdf-book-ocr/{task_id}")
     async def delete_pdf_book_ocr(task_id: str) -> dict[str, bool]:
@@ -622,6 +649,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         app.state.active_jobs.add(job_id)
         submit_task(
             app,
+            app.state.job_state_path(job_id),
             app.state.execute_single_job,
             app=app,
             job_id=job_id,
@@ -645,6 +673,10 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             raise HTTPException(status_code=404, detail="书库任务附件不存在。")
         return FileResponse(path, media_type=media_type, filename=filename)
 
+    @app.post("/api/jobs/{job_id}/stop", status_code=202)
+    async def stop_job(job_id: str) -> dict:
+        return request_task_stop(app, app.state.job_state_path(job_id))
+
     @app.delete("/api/jobs/{job_id}")
     async def delete_job(job_id: str) -> dict[str, bool]:
         if job_id in app.state.active_jobs:
@@ -666,8 +698,10 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         if job_id in app.state.active_jobs:
             raise HTTPException(status_code=400, detail="不能重跑正在运行的任务")
         app.state.active_jobs.add(job_id)
+        app.state.update_state(state_path, status="pending", current_stage=request.start_stage, error_message="")
         submit_task(
             app,
+            state_path,
             app.state.execute_job_rerun,
             app=app,
             job_id=job_id,
@@ -685,6 +719,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         write_json_file(app.state.batch_state_path(batch_id), state)
         submit_task(
             app,
+            app.state.batch_state_path(batch_id),
             app.state.execute_batch_job,
             app=app,
             batch_id=batch_id,
@@ -800,13 +835,14 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             raise HTTPException(status_code=400, detail="该批量子任务缺少 job_id，无法重跑")
 
         item_status = str(item.get("status") or "")
-        if item_status not in {"success", "partial", "failed"}:
+        if item_status not in {"success", "partial", "failed", "stopped"}:
             raise HTTPException(status_code=400, detail="只能重跑已结束或等待补页的批量子任务")
 
         app.state.active_jobs.add(batch_id)
-        app.state.active_jobs.add(item_job_id)
+        app.state.update_state(state_path, status="pending", current_stage=request.start_stage, error_message="")
         submit_task(
             app,
+            state_path,
             app.state.execute_batch_item_rerun,
             app=app,
             batch_id=batch_id,
@@ -819,6 +855,10 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
     async def list_batches() -> dict[str, list[dict]]:
         items = collect_state_items(root / "data/jobs/batches")
         return {"items": [reconcile_state(item) for item in items]}
+
+    @app.post("/api/batches/{batch_id}/stop", status_code=202)
+    async def stop_batch(batch_id: str) -> dict:
+        return request_task_stop(app, app.state.batch_state_path(batch_id))
 
     @app.delete("/api/batches/{batch_id}")
     async def delete_batch(batch_id: str) -> dict[str, bool]:
@@ -915,6 +955,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         write_json_file(app.state.stage_run_state_path(run_id), state)
         submit_task(
             app,
+            app.state.stage_run_state_path(run_id),
             app.state.execute_stage_file_run,
             app=app,
             run_id=run_id,
@@ -934,6 +975,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         write_json_file(app.state.stage_run_state_path(run_id), state)
         submit_task(
             app,
+            app.state.stage_run_state_path(run_id),
             app.state.execute_stage_run,
             app=app,
             run_id=run_id,
@@ -982,6 +1024,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
         executor = app.state.execute_stage_file_run if run_mode == "file" else app.state.execute_stage_run
         submit_task(
             app,
+            state_path,
             executor,
             app=app,
             run_id=run_id,
@@ -1024,6 +1067,10 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
     async def list_stage_runs() -> dict[str, list[dict]]:
         items = collect_state_items(root / "data/jobs/stage-runs")
         return {"items": [reconcile_state(item) for item in items]}
+
+    @app.post("/api/stage-runs/{run_id}/stop", status_code=202)
+    async def stop_stage_run(run_id: str) -> dict:
+        return request_task_stop(app, app.state.stage_run_state_path(run_id))
 
     @app.delete("/api/stage-runs/{run_id}")
     async def delete_stage_run(run_id: str) -> dict[str, bool]:

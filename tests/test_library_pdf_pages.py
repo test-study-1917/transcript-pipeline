@@ -227,6 +227,20 @@ def test_stop_preserves_inflight_page_then_resume_replays_checkpoint(source_pdf,
     assert [item[0] for item in delivered] == [1, 1, 5]
 
 
+def test_stop_during_render_does_not_send_page_to_gateway(source_pdf):
+    stop = Event()
+    gateway = FakeGateway({})
+
+    def render(*_):
+        stop.set()
+        return "data:image/png;base64,rendered"
+
+    result = ocr_pdf_pages(source_pdf, [1, 2], PDFOCROptions("gpt-fixture"), gateway=gateway,
+                           stop_event=stop, _runtime=PDFOCRRuntime(render_page=render))
+    assert not gateway.calls
+    assert result.interrupted and result.errors_by_page == {}
+
+
 def test_callback_failure_keeps_checkpoint_for_later_replay_without_new_ocr(source_pdf, tmp_path):
     checkpoints = tmp_path / "pages"
     gateway = FakeGateway({3: "recognized"})

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 from src.asr import file as file_asr
@@ -96,7 +97,8 @@ def transcribe_candidate_batch(audio_files: list[Path], output_dir: Path,
         asr_resources_from_settings(loaded), logger, lock_fds)
 
 
-def transcribe_batch(loaded_settings: LoadedSettings, logger: logging.Logger | None = None) -> list[AsrBatchItem]:
+def transcribe_batch(loaded_settings: LoadedSettings, logger: logging.Logger | None = None,
+                     *, stop_event: Event | None = None) -> list[AsrBatchItem] | None:
     audio_dir = loaded_settings.path_for("audio_dir")
     output_dir = ensure_directory(loaded_settings.path_for("asr_dir"))
     audio_files = iter_audio_files(audio_dir, loaded_settings.settings.audio.supported_audio_ext)
@@ -104,6 +106,10 @@ def transcribe_batch(loaded_settings: LoadedSettings, logger: logging.Logger | N
         supported_ext = ", ".join(loaded_settings.settings.audio.supported_audio_ext)
         raise AudioInputEmptyError(
             f"输入目录中没有可处理的音频文件: {audio_dir}。支持扩展名: {supported_ext}")
-    return file_asr.transcribe_files(
-        audio_files, output_dir, options=asr_options_from_settings(loaded_settings),
-        resources=asr_resources_from_settings(loaded_settings), logger=logger)
+    options = asr_options_from_settings(loaded_settings)
+    resources = asr_resources_from_settings(loaded_settings)
+    if stop_event is not None:
+        from src.asr.task_process import run_transcription_process
+        run_transcription_process(audio_files, output_dir, options, resources, logger, stop_event)
+        return None
+    return file_asr.transcribe_files(audio_files, output_dir, options=options, resources=resources, logger=logger)

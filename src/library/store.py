@@ -298,7 +298,7 @@ class LibraryStore:
             return self._book_dict(db, self._book_row(db, book_id))
 
     def _assert_book_idle(self, db, book_id):
-        if self._busy_books.get(book_id, 0) or db.execute("SELECT 1 FROM ocr_jobs WHERE book_id=? AND status IN ('pending','running') LIMIT 1", (book_id,)).fetchone():
+        if self._busy_books.get(book_id, 0) or db.execute("SELECT 1 FROM ocr_jobs WHERE book_id=? AND status IN ('pending','running','stopping') LIMIT 1", (book_id,)).fetchone():
             raise LibraryError(409, "书籍正在识别、导入或生成材料，暂不能执行此操作。")
 
     def archive_book(self, book_id, *, base_version, archived=True):

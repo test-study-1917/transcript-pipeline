@@ -29,10 +29,13 @@ import {
   pdfBookOCRArchiveUrl,
   pdfBookOCRResultUrl,
   retryPDFBookOCR,
+  stopPDFBookOCR,
   submitPDFBookOCR,
   type PDFBookOCRItem,
   type PDFBookOCRTask,
 } from "../api/client";
+import { isTaskActive, taskStatusLabel as sharedTaskStatusLabel } from "../api/taskStatus";
+import TaskStopButton from "../components/TaskStopButton.vue";
 import RemoteDirectoryUpload from "../components/RemoteDirectoryUpload.vue";
 import FastModeSwitch from "../components/FastModeSwitch.vue";
 import RemoteFileUpload from "../components/RemoteFileUpload.vue";
@@ -69,7 +72,7 @@ const form = reactive({
 });
 
 const isTaskRunning = computed(() => {
-  return currentTask.value?.status === "pending" || currentTask.value?.status === "running";
+  return isTaskActive(currentTask.value?.status ?? "");
 });
 
 const taskItems = computed(() => currentTask.value?.items ?? []);
@@ -79,7 +82,7 @@ const canRetryMissingPages = computed(() => {
   if (!task || isTaskRunning.value || task.status === "success") {
     return false;
   }
-  return task.status === "partial" || task.status === "failed";
+  return ["partial", "failed", "stopped"].includes(task.status);
 });
 
 function taskStatusLabelFor(status: PDFBookOCRTask["status"] | undefined): string {
@@ -98,7 +101,7 @@ function taskStatusLabelFor(status: PDFBookOCRTask["status"] | undefined): strin
   if (status === "failed") {
     return "识别失败";
   }
-  return "尚未提交";
+  return status ? sharedTaskStatusLabel(status) : "尚未提交";
 }
 
 const taskStatusLabel = computed(() => taskStatusLabelFor(currentTask.value?.status));
@@ -115,7 +118,7 @@ function taskStatusTypeFor(
   if (status === "partial") {
     return "warning";
   }
-  if (status === "pending" || status === "running") {
+  if (status && isTaskActive(status)) {
     return "info";
   }
   return "default";
@@ -148,7 +151,7 @@ async function refreshTask() {
       return;
     }
     currentTask.value = task;
-    if (task.status !== "pending" && task.status !== "running") {
+    if (!isTaskActive(task.status)) {
       stopPolling();
       void loadTaskHistory();
     }
@@ -159,6 +162,11 @@ async function refreshTask() {
     stopPolling();
     message.error(caught instanceof Error ? caught.message : "读取 PDF OCR 任务状态失败");
   }
+}
+
+function updateStoppedTask(task: PDFBookOCRTask) {
+  if (task.id === activeTaskId.value) currentTask.value = task;
+  taskHistory.value = taskHistory.value.map((item) => item.id === task.id ? task : item);
 }
 
 async function loadTaskHistory() {
@@ -224,17 +232,20 @@ function sourceModeChanged() {
   form.input_path = "";
 }
 
-function itemStatusType(item: PDFBookOCRItem): "success" | "warning" | "error" {
+function itemStatusType(item: PDFBookOCRItem): "success" | "warning" | "error" | "info" {
   if (item.success) {
     return "success";
   }
-  return item.completed_pages > 0 ? "warning" : "error";
+  if (isTaskRunning.value && !item.error) return "info";
+  return item.stopped || item.completed_pages > 0 ? "warning" : "error";
 }
 
 function itemStatusLabel(item: PDFBookOCRItem): string {
   if (item.success) {
     return "完成";
   }
+  if (item.stopped) return "已停止";
+  if (isTaskRunning.value && !item.error) return taskStatusLabel.value;
   return item.completed_pages > 0 ? "待补页" : "失败";
 }
 
@@ -278,7 +289,7 @@ async function downloadAll() {
 }
 
 function confirmDelete(task: PDFBookOCRTask) {
-  if (task.status === "pending" || task.status === "running" || deletingTaskId.value) {
+  if (isTaskActive(task.status) || deletingTaskId.value) {
     return;
   }
   dialog.warning({
@@ -476,7 +487,16 @@ onBeforeUnmount(stopPolling);
               <n-flex align="center" :size="10">
                 <span>识别结果</span>
               </n-flex>
-              <n-tag :type="taskStatusType" :bordered="false">{{ taskStatusLabel }}</n-tag>
+              <n-flex align="center" :size="8">
+                <n-tag :type="taskStatusType" :bordered="false">{{ taskStatusLabel }}</n-tag>
+                <TaskStopButton
+                  v-if="currentTask"
+                  :key="currentTask.id"
+                  :status="currentTask.status"
+                  :request="() => stopPDFBookOCR(currentTask!.id)"
+                  @updated="updateStoppedTask"
+                />
+              </n-flex>
             </n-flex>
           </template>
 
@@ -489,7 +509,7 @@ onBeforeUnmount(stopPolling);
                 <p class="pdf-book-ocr-task__id">{{ currentTask.id }}</p>
               </div>
               <div class="pdf-book-ocr-task__counts">
-                <span>书籍 {{ currentTask.total ?? 0 }}</span>
+                <span>书籍 {{ currentTask.total ?? taskItems.length }}</span>
                 <span>完整 {{ currentTask.success ?? 0 }}</span>
                 <span v-if="currentTask.pages_total">页面 {{ currentTask.pages_completed ?? 0 }}/{{ currentTask.pages_total }}</span>
                 <span v-if="currentTask.pages_failed">待补 {{ currentTask.pages_failed }}</span>
@@ -514,7 +534,7 @@ onBeforeUnmount(stopPolling);
                 @click="confirmDelete(currentTask)"
               >删除项目</n-button>
               <span v-if="!isTaskRunning && currentTask.failed">仅打包完整书籍；未完成书籍列于 ZIP 内的 summary.json。</span>
-              <span v-if="isTaskRunning">识别结束后可打包下载或删除项目。</span>
+              <span v-if="currentTask.status === 'stopping'">等待已提交的页面返回，结果会保留。</span>
             </n-flex>
 
             <n-alert
@@ -546,7 +566,7 @@ onBeforeUnmount(stopPolling);
                   </span>
                   <span v-else-if="item.success" class="pdf-book-ocr-result-item__meta">{{ item.text_length }} 字</span>
                 </div>
-                <p v-if="!item.success" class="pdf-book-ocr-result-item__error">{{ item.error || 'OCR 未返回结果。' }}</p>
+                <p v-if="!item.success && !item.stopped && item.error" class="pdf-book-ocr-result-item__error">{{ item.error }}</p>
                 <div v-if="item.failed_page_numbers?.length" class="pdf-book-ocr-result-item__pages">
                   <strong>待重试页：</strong>
                   <span>{{ item.failed_page_numbers.join('、') }}</span>
@@ -618,7 +638,7 @@ onBeforeUnmount(stopPolling);
                 tertiary
                 size="small"
                 :loading="deletingTaskId === task.id"
-                :disabled="task.status === 'pending' || task.status === 'running' || !!deletingTaskId || retrying"
+                :disabled="isTaskActive(task.status) || !!deletingTaskId || retrying"
                 :aria-label="`删除 ${taskSourceLabel(task)}`"
                 @click="confirmDelete(task)"
               >删除</n-button>

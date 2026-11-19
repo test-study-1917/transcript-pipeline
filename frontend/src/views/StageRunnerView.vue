@@ -20,6 +20,7 @@ import {
 } from "naive-ui";
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 
+import { isTaskActive, taskStatusLabel } from "../api/taskStatus";
 import {
   getStageFileContract,
   getStageRun,
@@ -190,7 +191,7 @@ function stopPolling() {
 }
 
 function isActiveStageRun(state: JobState): boolean {
-  return state.status === "pending" || state.status === "running";
+  return isTaskActive(state.status);
 }
 
 function stageRunStatusType(status: string): "success" | "error" | "warning" {
@@ -219,7 +220,7 @@ async function loadStageRuns() {
 async function refreshStage(runId: string) {
   const state = await getStageRun(runId);
   stageState.value = state;
-  if (state.status === "success" || state.status === "partial" || state.status === "failed") {
+  if (!isTaskActive(state.status)) {
     stopPolling();
     void loadStageRuns();
   }
@@ -631,7 +632,7 @@ onBeforeUnmount(stopPolling);
         <p>{{ stageState.download_name }} 已在本次隔离工作区生成。</p>
         <n-button type="primary" @click="downloadStageFileResult">下载结果 ZIP</n-button>
       </section>
-      <JobStatusCard v-if="stageState" title="当前阶段状态" :state="stageState" default-expanded @rerun="handleStageRunRetry" />
+      <JobStatusCard v-if="stageState" title="当前阶段状态" :state="stageState" default-expanded @rerun="handleStageRunRetry" @updated="(next) => { if (stageState?.id === next.id) stageState = next; }" />
       <section v-else class="inspector-empty">
         <h3>运行状态与结果</h3><p>提交后查看当前阶段进度，或从下方历史记录中恢复查看。</p>
         <p>本机文件模式生成独立 ZIP；目录模式的产物保留在配置目录。</p>
@@ -669,7 +670,7 @@ onBeforeUnmount(stopPolling);
           </div>
           <div class="stage-history-item__meta">
             <n-tag v-if="run.run_mode === 'file'" size="small" type="info" :bordered="false">文件模式</n-tag>
-            <n-tag size="small" :type="stageRunStatusType(run.status)" :bordered="false">{{ run.status }}</n-tag>
+            <n-tag size="small" :type="stageRunStatusType(run.status)" :bordered="false">{{ taskStatusLabel(run.status) }}</n-tag>
             <span>{{ run.updated_at }}</span>
           </div>
         </button>

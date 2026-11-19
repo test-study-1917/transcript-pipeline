@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Event
 from typing import Callable, Iterable
 
 from src.codex_lb_client import CodexLBClient
@@ -475,6 +476,7 @@ def run_codex_api_pdf_ocr(
     prompt_builder: Callable[[str | Path, int, int], str] = build_codex_api_image_ocr_prompt,
     retry_plan: PDFOCRRetryPlan | None = None,
     gateway_connection=None,
+    stop_event: Event | None = None,
 ) -> tuple[str, list[str]]:
     settings = loaded_settings.settings.reference
     if not settings.codex_ocr_model.strip():
@@ -496,6 +498,7 @@ def run_codex_api_pdf_ocr(
                       settings.codex_ocr_submit_interval_seconds),
         gateway=client, checkpoint_dir=checkpoint_dir, progress_callback=progress_callback,
         prompt_builder=prompt_builder, retry_plan=retry_plan,
+        stop_event=stop_event,
         _runtime=PDFOCRRuntime(
             page_count=get_pdf_page_count, render_page=render_pdf_page_as_png_data_url,
             load_checkpoints=load_codex_ocr_page_checkpoints, load_sources=load_codex_ocr_page_sources,
@@ -702,6 +705,7 @@ def read_pdf_reference(
     checkpoint_dir: Path | None = None,
     progress_callback: Callable[[CodexOCRPageProgress], None] | None = None,
     gateway_connection=None,
+    stop_event: Event | None = None,
 ) -> tuple[str, str, list[str]]:
     primary_backend = loaded_settings.settings.reference.ai_ocr_backend.strip() or AI_OCR_BACKEND_CODEX_API
     if primary_backend not in VALID_AI_OCR_BACKENDS:
@@ -714,6 +718,7 @@ def read_pdf_reference(
             checkpoint_dir=checkpoint_dir,
             progress_callback=progress_callback,
             **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
+            **({"stop_event": stop_event} if stop_event is not None else {}),
         )
         return text, ai_ocr_method_name(primary_backend), warnings
     return run_pdf_ai_ocr_backend(reference_path, loaded_settings, primary_backend)
@@ -727,6 +732,7 @@ def prepare_reference_file(
     checkpoint_root: Path | None = None,
     progress_callback: Callable[[ReferenceFileProgress], None] | None = None,
     gateway_connection=None,
+    stop_event: Event | None = None,
 ) -> ReferenceFileResult:
     source_type = reference_path.suffix.lower().lstrip(".")
     output_paths = build_reference_output_paths(
@@ -778,6 +784,7 @@ def prepare_reference_file(
                 checkpoint_dir=checkpoint_dir,
                 progress_callback=pdf_progress,
                 **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
+                **({"stop_event": stop_event} if stop_event is not None else {}),
             )
         except CodexOCRPagesIncompleteError as exc:
             result = ReferenceFileResult(
@@ -887,6 +894,7 @@ def prepare_reference_batch(
     checkpoint_root: Path | None = None,
     progress_callback: Callable[[ReferenceFileProgress], None] | None = None,
     gateway_connection=None,
+    stop_event: Event | None = None,
 ) -> ReferenceBatchSummary:
     reference_dir = loaded_settings.path_for("reference_dir")
     output_dir = ensure_directory(loaded_settings.path_for("extracted_text_dir"))
@@ -905,6 +913,8 @@ def prepare_reference_batch(
     failed_count = 0
 
     for reference_path in reference_files:
+        if stop_event is not None and stop_event.is_set():
+            break
         output_paths = build_reference_output_paths(reference_path, output_dir)
         result = prepare_reference_file(
             reference_path,
@@ -913,7 +923,10 @@ def prepare_reference_batch(
             checkpoint_root=checkpoint_root,
             progress_callback=progress_callback,
             **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
+            **({"stop_event": stop_event} if stop_event is not None else {}),
         )
+        if stop_event is not None and stop_event.is_set() and not result.success:
+            break
         write_reference_result(result, output_paths)
 
         if result.success:
